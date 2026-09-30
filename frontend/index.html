@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>JARVIS</title>
+<link rel="stylesheet" href="styles.css"/>
+</head>
+<body>
+<div id="bg"></div>
+<header class="topbar">
+  <div class="brand"><span class="dot"></span> J.A.R.V.I.S.</div>
+  <div class="controls">
+    <select id="provider" title="AI provider — models load live">
+      <option value="auto">auto (free→paid)</option>
+      <option value="opencode">opencode (your login)</option>
+      <option value="openrouter">openrouter</option>
+      <option value="groq">groq</option>
+      <option value="gemini">gemini</option>
+      <option value="ollama">ollama (local)</option>
+      <option value="openai">openai</option>
+      <option value="anthropic">anthropic</option>
+    </select>
+    <select id="model" title="Model — live list for the provider"><option value="">auto model</option></select>
+    <button id="keysBtn" title="API keys — paste in app, models load live">🔑 keys</button>
+    <button id="screenBtn" title="Screenshot">📷</button>
+    <label class="auto" title="Agent mode: Jarvis thinks + runs commands by itself"><input type="checkbox" id="agentMode"/> agent</label>
+    <label class="auto" title="Allow AI to click without asking"><input type="checkbox" id="autopilot"/> autopilot</label>
+  </div>
+</header>
+
+<main class="layout">
+  <section class="left">
+    <canvas id="reactor" width="300" height="300"></canvas>
+    <canvas id="wave" width="300" height="64"></canvas>
+    <div class="status" id="status">initializing…</div>
+    <div class="voiceRow">
+      <button id="micBtn" class="mic">🎙 hold / click to talk</button>
+      <button id="speakToggle" class="ghost on">🔊 voice replies ON</button>
+    </div>
+    <div class="voiceRow">
+      <button id="wakeBtn" class="ghost" title="Always-listening wake word — offline, no API keys">👂 wake: OFF</button>
+      <span class="hint" id="wakeHint">says “jarvis” → talks</span>
+    </div>
+    <div class="screenBox">
+      <div class="screenHead"><span>VISION</span><button id="seeBtn" class="ghost">what do you see?</button></div>
+      <img id="screenImg" alt="screenshot preview — press 📷"/>
+    </div>
+  </section>
+
+  <section class="right">
+    <div id="chat"></div>
+    <form id="form">
+      <button type="button" id="plusBtn" title="screenshot + send">＋📷</button>
+      <input id="input" autocomplete="off" placeholder='Ask anything… “research black holes” goes online • “do: …” runs it • Ctrl+K'/>
+      <button type="submit" id="send">➤</button>
+    </form>
+  </section>
+</main>
+
+<div id="keysModal" class="modal hidden">
+  <div class="card wide">
+    <h3>🔑 API Keys — paste here, models appear live <small>(saved to backend .env, keys masked)</small></h3>
+    <p class="hint">Free path: <b>OpenCode</b> (auto-detected) / <b>OpenRouter</b> / <b>Groq</b> / <b>Gemini</b> / <b>Ollama local</b>. Paid: OpenAI, Anthropic. Paste → Save → model list refreshes from the provider <i>right now</i>.</p>
+    <div id="keyRows"></div>
+    <div class="row"><button id="saveKeys">Save keys</button><button id="refreshModels">↻ refresh models</button><button id="closeKeys" class="ghost">Close</button></div>
+    <div id="provStatus" class="prov"></div>
+  </div>
+</div>
+
+<div id="toast"></div>
+<script src="renderer.js"></script>
+</body>
+</html>

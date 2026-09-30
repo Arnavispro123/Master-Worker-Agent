@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# Backend runtime
+jarvis_memory.db
+*.db-shm
+*.db-wal
+backend/__pycache__/
+
+# Env / secrets — NEVER commit real keys
+.env
+*.log
+
+# User-local caches (regenerated)
+preferences.json
+models_cache.json
+
+# Node / Electron
+node_modules/
+dist/
+out/
+*.log
+npm-debug.log*
+
+# OS
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Audio temp
+*.wav
+*.mp3
+tmp/
