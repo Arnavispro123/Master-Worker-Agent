@@ -22,7 +22,7 @@ DEFAULTS = {
 }
 
 _BOOL_KEYS = {"autopilot", "agent_mode", "voice_on", "wake_on"}
-_STR_KEYS = {"provider", "model", "tts_voice", "tts_rate"}
+_STR_KEYS = {"provider", "model", "tts_voice", "tts_rate", "ears_mode"}
 
 
 def load() -> dict:

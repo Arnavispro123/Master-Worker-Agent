@@ -20,7 +20,12 @@ function writePrefs(patch) {
   } catch { return {}; }
 }
 
-function startBackend() {
+async function startBackend() {
+  // main.py usually started one already — reuse it instead of a second backend
+  try {
+    const res = await fetch(BACKEND_URL + '/api/health');
+    if (res.ok) { console.log('backend already running — using it'); return; }
+  } catch {}
   // spawn python backend next to the app.
   // HUD owns mic+speakers in Electron → backend stays silent (no double voice).
   const py = process.platform === 'win32' ? 'python' : 'python3';

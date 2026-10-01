@@ -123,7 +123,7 @@ chat.addEventListener("click", async e => {
 async function health() {
   try {
     const r = await (await fetch(API + "/api/health")).json();
-    $("status").textContent = `online • ${new Date().toLocaleTimeString()} • autopilot ${r.autopilot ? "ON" : "OFF"}`;
+    $("status").textContent = `online • ${new Date().toLocaleTimeString()} • autopilot ${r.autopilot ? "ON" : "OFF"} • ears ${wakeOn ? earsLive : "off"}`;
   } catch { $("status").textContent = "backend offline — run: python main.py"; }
 }
 setInterval(health, 5000); health();
@@ -520,7 +520,12 @@ $("micBtn").onclick = async () => {
       input.value = final + interim;
     };
     rec.onend = () => { _micUI(false); listening = false; NOTE("idle"); if (final.trim()) send(final.trim()); };
-    rec.onerror = () => { listening = false; _micUI(false); NOTE("idle"); };
+    rec.onerror = (ev) => {
+      listening = false; _micUI(false); NOTE("idle");
+      const t = (ev && ev.error) || "";
+      if (t === "not-allowed" || t === "service-not-allowed") toast("Mic blocked — allow the microphone, then try again.");
+      else if (t === "audio-capture") toast("No microphone found.");
+    };
     try { rec.start(); } catch { listening = false; _micUI(false); }
     return;
   }
@@ -572,6 +577,10 @@ async function loadPrefs() {
       setWakeUI();
     }
     _pendingModel = p.model || "";
+    if (p.ears_mode === "backend" || p.ears_mode === "window") {
+      earsMode = p.ears_mode;
+      try { $("ears").value = earsMode; } catch {}
+    }
     await loadModels($("provider").value);
     if (_pendingModel) $("model").value = _pendingModel;
   } catch { /* backend down — defaults stand */ }
@@ -584,7 +593,7 @@ function savePrefs() {
       body: JSON.stringify({
         provider: $("provider").value, model: $("model").value || "",
         autopilot: $("autopilot").checked, agent_mode: $("agentMode").checked,
-        voice_on: voiceOn, wake_on: wakeOn,
+        voice_on: voiceOn, wake_on: wakeOn, ears_mode: earsMode,
       })
     }).catch(() => {});
   }, 400);
@@ -594,7 +603,29 @@ function savePrefs() {
    for "jarvis / hey jarvis / computer". Tier 2: backend sounddevice+google
    voice loop via /api/wake/* (same stack as your proven build). */
 let wakeOn = localStorage.getItem("jarvis_wake") === "1", wakeRec = null, lastWakeFire = 0;
-function setWakeUI() { $("wakeBtn").textContent = wakeOn ? "Wake word: listening" : "Wake word: off"; $("wakeBtn").classList.toggle("on", wakeOn); }
+let earsMode = "window", earsLive = "off", _lastWakeToast = 0;
+function setWakeUI() {
+  $("wakeBtn").textContent = wakeOn ? `Wake word: listening (${earsLive === "off" ? "starting…" : earsLive})` : "Wake word: off";
+  $("wakeBtn").classList.toggle("on", wakeOn);
+}
+function wakeToastOnce(msg) {
+  if (Date.now() - _lastWakeToast > 30000) { _lastWakeToast = Date.now(); toast(msg); }
+}
+function startWake() {
+  // backend ears work with the tab CLOSED; window ears need this tab open
+  if (earsMode === "backend") {
+    try { wakeRec && wakeRec.stop(); } catch {}
+    earsLive = "backend"; setWakeUI();
+    startBackendWake();
+  } else {
+    startBrowserWake(); // stops backend ears internally — one mic
+  }
+}
+function stopWake() {
+  earsLive = "off"; setWakeUI();
+  try { wakeRec && wakeRec.stop(); } catch { }
+  stopBackendWake();
+}
 setWakeUI();
 function stripWakeWord(txt) {
   const m = String(txt || "").toLowerCase().match(/(hey jarvis|jarvis|computer)\s*(.*)/);
@@ -603,6 +634,7 @@ function stripWakeWord(txt) {
 function startBrowserWake() {
   if (!SR) { toast("wake needs Chrome/Edge speech — using backend instead"); startBackendWake(); return; }
   stopBackendWake(); // one ears at a time: browser and backend share one mic/speaker
+  earsLive = "window"; setWakeUI();
   try { wakeRec && wakeRec.stop(); } catch { }
   wakeRec = new SR(); wakeRec.lang = "en-US"; wakeRec.continuous = true; wakeRec.interimResults = true;
   wakeRec.onresult = e => {
@@ -631,7 +663,16 @@ function startBrowserWake() {
     }
   };
   wakeRec.onend = () => { if (wakeOn && Date.now() - lastWakeFire > 4000) { try { wakeRec.start(); } catch { setTimeout(startBrowserWake, 1500); } } };
-  wakeRec.onerror = () => { if (wakeOn) setTimeout(() => { try { wakeRec.start(); } catch { } }, 2000); };
+  wakeRec.onerror = (ev) => {
+    const t = (ev && ev.error) || "";
+    if (t === "not-allowed" || t === "service-not-allowed")
+      wakeToastOnce("Mic blocked — allow the microphone for this site, then toggle wake off/on.");
+    else if (t === "audio-capture")
+      wakeToastOnce("No microphone found — plug one in, then toggle wake off/on.");
+    else if (t && t !== "network" && t !== "no-speech")
+      wakeToastOnce("Wake listener hiccup (" + t + ") — retrying…");
+    if (wakeOn) setTimeout(() => { try { wakeRec.start(); } catch { } }, 2000);
+  };
   try { wakeRec.start(); } catch { }
 }
 let _pollTimer = null;
@@ -640,9 +681,15 @@ async function startBackendWake() {
   try { await fetch(API + "/api/wake/start", { method: "POST" }); toast("backend voice wake on (mic + sounddevice, no keys — same as your build)"); }
   catch { toast("backend wake unavailable"); return; }
   if (_pollTimer) return;
+  let _lastWakeErr = "";
   _pollTimer = setInterval(async () => {
     try {
       const p = await (await fetch(API + "/api/wake/poll")).json();
+      const st = p.state || {};
+      if (st.error && st.error !== _lastWakeErr) {
+        _lastWakeErr = st.error;
+        toast("Backend ears problem: " + String(st.error).slice(0, 150));
+      } else if (!st.error) _lastWakeErr = "";
       for (const h of (p.hits || [])) {
         if (h.kind !== "command" || !h.text) continue;  // skip "wake" dupes
         const key = h.n + "::" + h.text;
@@ -661,12 +708,29 @@ function stopBackendWake() {
   fetch(API + "/api/wake/stop", { method: "POST" }).catch(() => {});
 }
 $("wakeBtn").onclick = () => {
-  wakeOn = !wakeOn; localStorage.setItem("jarvis_wake", wakeOn ? "1" : "0"); setWakeUI(); savePrefs();
-  if (wakeOn) { toast("wake ON — say “jarvis”. No keys, all local."); startBrowserWake(); }
-  else { try { wakeRec && wakeRec.stop(); } catch { } stopBackendWake(); toast("wake OFF"); }
+  wakeOn = !wakeOn; localStorage.setItem("jarvis_wake", wakeOn ? "1" : "0"); savePrefs();
+  if (wakeOn) {
+    toast(earsMode === "backend"
+      ? "Backend ears ON — tab can close. Say “jarvis”."
+      : "Window ears ON — keep this tab open. Say “jarvis”.");
+    startWake();
+  } else { stopWake(); toast("wake OFF"); }
+};
+$("ears").onchange = e => {
+  earsMode = e.target.value === "backend" ? "backend" : "window";
+  savePrefs();
+  if (wakeOn) startWake();
+  else setWakeUI();
 };
 /* boot: restore saved prefs (provider/model/switches), then resume wake if it was on */
-loadPrefs().then(() => { if (wakeOn) startBrowserWake(); });
+loadPrefs().then(() => {
+  if (IS_ELECTRON && earsMode === "window") {
+    // Web Speech has no key in Electron — backend ears are the working path there
+    try { $("ears").value = "backend"; } catch {}
+    earsMode = "backend";
+  }
+  if (wakeOn) startWake();
+});
 
 /* palette (no native prompts — everything in-app) */
 function openPalette(prefill = "") {
