@@ -1,9 +1,24 @@
 const { app, BrowserWindow, Tray, Menu, globalShortcut, nativeImage, ipcMain, screen } = require('electron');
 const path = require('path');
+const fs = require('fs');
 const { spawn } = require('child_process');
 
-let win, orb, tray, backend, quitting = false, orbHideTimer = null;
+let win, orb, picker, tray, backend, quitting = false, orbHideTimer = null;
 const BACKEND_URL = 'http://127.0.0.1:8765';
+const ROOT = path.join(__dirname, '..');
+const PREFS_FILE = path.join(ROOT, 'preferences.json');
+
+/* ── prefs (shared with backend/prefs.py format) ── */
+function readPrefs() {
+  try { return JSON.parse(fs.readFileSync(PREFS_FILE, 'utf8')); } catch { return {}; }
+}
+function writePrefs(patch) {
+  try {
+    const p = Object.assign(readPrefs(), patch);
+    fs.writeFileSync(PREFS_FILE, JSON.stringify(p, null, 2));
+    return p;
+  } catch { return {}; }
+}
 
 function startBackend() {
   // spawn python backend next to the app
@@ -13,31 +28,63 @@ function startBackend() {
   backend.on('error', () => console.log('backend spawn failed — run manually: python backend/app.py'));
 }
 
-/* ── orb: circular semi-transparent overlay, bottom-right ── */
-function orbPosition() {
-  const area = screen.getPrimaryDisplay().workArea; // respects taskbar
-  const W = 300, H = 330;
-  return { x: Math.max(0, area.x + area.width - W - 14), y: Math.max(0, area.y + area.height - H - 14), W, H };
+/* ── orb geometry: work area ÷ 8 zones (4 cols × 2 rows) ── */
+const ORB_W = 300, ORB_H = 330, PAD = 14;
+function zoneBounds(zone) {
+  const area = screen.getPrimaryDisplay().workArea;
+  const z = Math.max(0, Math.min(7, zone | 0));
+  const col = z % 4, row = Math.floor(z / 4);
+  const zw = area.width / 4, zh = area.height / 2;
+  return {
+    x: Math.round(area.x + col * zw + Math.max(0, (zw - ORB_W) / 2)),
+    y: Math.round(area.y + row * zh + Math.max(0, (zh - ORB_H) / 2)),
+  };
 }
+function clampOrb(x, y) {
+  const area = screen.getPrimaryDisplay().workArea;
+  return {
+    x: Math.max(area.x, Math.min(x, area.x + area.width - ORB_W)),
+    y: Math.max(area.y, Math.min(y, area.y + area.height - ORB_H)),
+  };
+}
+function savedOrbPos() {
+  const p = readPrefs();
+  const area = screen.getPrimaryDisplay().workArea;
+  if (typeof p.orb_fx === 'number' && typeof p.orb_fy === 'number') {
+    return clampOrb(Math.round(area.x + p.orb_fx * area.width), Math.round(area.y + p.orb_fy * area.height));
+  }
+  return zoneBounds(typeof p.orb_zone === 'number' ? p.orb_zone : 7);
+}
+
+/* ── orb window ── */
 function createOrb() {
-  const { x, y, W, H } = orbPosition();
+  const pos = savedOrbPos();
   orb = new BrowserWindow({
-    width: W, height: H, x, y,
+    width: ORB_W, height: ORB_H, x: pos.x, y: pos.y,
     transparent: true, frame: false, alwaysOnTop: true, skipTaskbar: true,
     resizable: false, minimizable: false, maximizable: false,
-    focusable: false, show: false, hasShadow: false,
+    show: false, hasShadow: false,
     webPreferences: { preload: path.join(__dirname, 'preload.js') },
   });
   orb.loadFile(path.join(__dirname, '..', 'frontend', 'orb.html'));
   orb.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
   orb.setAlwaysOnTop(true, 'screen-saver');
-  // click orb → bring main window forward
-  orb.webContents.on('ipc-message', () => {});
-  screen.on('display-metrics-changed', () => { if (orb) { const p = orbPosition(); orb.setBounds({ x: p.x, y: p.y, width: p.W, height: p.H }); } });
+  screen.on('display-metrics-changed', () => { if (orb && !orb.isDestroyed()) { const q = savedOrbPos(); orb.setBounds({ x: q.x, y: q.y, width: ORB_W, height: ORB_H }); } });
+}
+/* first-run placement picker: full-screen 8-zone map */
+function createPicker() {
+  const area = screen.getPrimaryDisplay().workArea;
+  picker = new BrowserWindow({
+    width: area.width, height: area.height, x: area.x, y: area.y,
+    transparent: true, frame: false, alwaysOnTop: true, skipTaskbar: true,
+    resizable: false, webPreferences: { preload: path.join(__dirname, 'preload.js') },
+  });
+  picker.loadFile(path.join(__dirname, '..', 'frontend', 'place.html'));
+  picker.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
 }
 function showOrb(activity, text) {
-  if (!orb) return;
-  orb.showInactive();
+  if (!orb || orb.isDestroyed()) return;
+  try { orb.showInactive(); } catch {}
   try { orb.webContents.send('orb-activity', { activity, text: String(text || '').slice(0, 160), t: Date.now() }); } catch {}
   clearTimeout(orbHideTimer);
   if (activity !== 'listening') {
@@ -49,9 +96,14 @@ function hideOrb() {
   try { orb && orb.hide(); } catch {}
 }
 
-/* HUD → orb bridge: renderer calls window.jarvisAPI.notify(kind, text) */
+/* HUD → orb bridge */
 ipcMain.on('hud-activity', (_e, d) => {
   const kind = (d && d.kind) || 'idle';
+  if (kind === 'level') {
+    // voice amplitude @~12Hz: forward only, no show/hide churn
+    try { orb && orb.webContents.send('orb-activity', { activity: 'level', level: d.level, t: Date.now() }); } catch {}
+    return;
+  }
   if (kind === 'speaking') showOrb('speaking', d.text);
   else if (kind === 'listening') showOrb('listening', d.text || 'listening…');
   else if (kind === 'working' || kind === 'thinking') showOrb('working', d.text);
@@ -60,6 +112,43 @@ ipcMain.on('hud-activity', (_e, d) => {
 });
 ipcMain.on('orb-click', () => {
   if (win) { win.show(); try { win.focus(); } catch {} }
+});
+/* orb drag → move + persist fractional position */
+ipcMain.on('orb-drag', (_e, d) => {
+  try {
+    if (!orb || orb.isDestroyed()) return;
+    const [x, y] = orb.getPosition();
+    const q = clampOrb(x + (d.dx || 0), y + (d.dy || 0));
+    orb.setPosition(q.x, q.y);
+  } catch {}
+});
+ipcMain.on('orb-drag-end', () => {
+  try {
+    if (!orb || orb.isDestroyed()) return;
+    const area = screen.getPrimaryDisplay().workArea;
+    const [x, y] = orb.getPosition();
+    writePrefs({ orb_fx: (x - area.x) / area.width, orb_fy: (y - area.y) / area.height });
+  } catch {}
+});
+/* placement choice from picker */
+ipcMain.on('orb-placed', (_e, d) => {
+  const zone = Math.max(0, Math.min(7, (d && d.zone) | 0));
+  try {
+    const prefs = readPrefs();
+    delete prefs.orb_fx; delete prefs.orb_fy;
+    prefs.orb_zone = zone; prefs.orb_placed = true;
+    fs.writeFileSync(PREFS_FILE, JSON.stringify(prefs, null, 2));
+  } catch {}
+  try { picker && picker.close(); } catch {}
+  picker = null;
+  if (!orb || orb.isDestroyed()) createOrb();
+  const q = zoneBounds(zone);
+  try { orb.setBounds({ x: q.x, y: q.y, width: ORB_W, height: ORB_H }); } catch {}
+  showOrb('idle', 'I’ll rest here, sir.');
+});
+ipcMain.handle('get-work-area', () => {
+  const a = screen.getPrimaryDisplay().workArea;
+  return { x: a.x, y: a.y, width: a.width, height: a.height };
 });
 
 /* ── main window ── */
@@ -103,6 +192,7 @@ function createTray() {
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: 'Show Jarvis', click: () => { win && win.show(); } },
     { label: 'Show orb', click: () => showOrb('idle', 'at your service, sir.') },
+    { label: 'Move orb…', click: () => { hideOrb(); if (!picker || picker.isDestroyed()) createPicker(); else picker.show(); } },
     { type: 'separator' },
     { label: 'Quit Jarvis', click: () => { quitting = true; app.quit(); } },
   ]));
@@ -111,6 +201,10 @@ function createTray() {
 
 app.whenReady().then(() => {
   startBackend();
+  const prefs = readPrefs();
+  if (!prefs.orb_placed && typeof prefs.orb_zone !== 'number') {
+    createPicker(); // first run: ask where the orb should rest
+  }
   createOrb();
   createWindow();
   createTray();

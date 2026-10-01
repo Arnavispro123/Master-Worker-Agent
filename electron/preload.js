@@ -12,4 +12,14 @@ contextBridge.exposeInMainWorld('jarvisAPI', {
   onOrb: (fn) => {
     try { ipcRenderer.on('orb-activity', (_e, d) => { try { fn(d); } catch {} }); } catch {}
   },
+  // orb placement + drag (orb / picker windows)
+  orbPlaced: (zone) => {
+    try { ipcRenderer.send('orb-placed', { zone }); } catch {}
+  },
+  orbDrag: (dx, dy) => {
+    try { ipcRenderer.send('orb-drag', { dx, dy }); } catch {}
+  },
+  orbDragEnd: () => {
+    try { ipcRenderer.send('orb-drag-end'); } catch {}
+  },
 });

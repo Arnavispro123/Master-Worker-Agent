@@ -44,12 +44,21 @@ def load() -> dict:
 
 def save(patch: dict) -> dict:
     prefs = load()
+    # preserve keys owned by other writers (Electron orb position etc.)
+    try:
+        raw = json.loads(PREFS_FILE.read_text()) if PREFS_FILE.exists() else {}
+    except Exception:
+        raw = {}
     for k in _BOOL_KEYS:
         if k in patch:
             prefs[k] = bool(patch[k])
     for k in _STR_KEYS:
         if k in patch and isinstance(patch[k], str):
             prefs[k] = patch[k][:120]
+    if isinstance(raw, dict):
+        for k, v in raw.items():
+            if k not in prefs:
+                prefs[k] = v
     try:
         PREFS_FILE.write_text(json.dumps(prefs, indent=2))
     except Exception as e:

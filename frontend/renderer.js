@@ -84,6 +84,8 @@ function addMsg(who, text, meta = "", img = "") {
   chat.appendChild(d); chat.scrollTop = 1e6; return d;
 }
 function stopAllSound() {
+  _voicing = false;
+  NOTE("idle");
   try { speechSynthesis.cancel(); } catch { }
   try { if (_audioEl) _audioEl.pause(); } catch { }
   try { if (_sendAbort) _sendAbort.abort(); } catch { }
@@ -291,7 +293,41 @@ $("agentMode").onchange = e => { toast(e.target.checked ? "🤖 agent ON — I�
 /* voice out — backend edge-TTS (male Ryan, your voice) first, browser male fallback.
    Raw speechSynthesis default = female + chops long text, so: pick an
    en-GB male voice, slow it down, and chain sentence chunks. */
-let _maleVoice = null, _audioEl = null;
+let _maleVoice = null, _audioEl = null, _actx = null, _analyser = null;
+let _voicing = false, _lastBlob = "", _lastLevel = 0;
+function _ensureAudio() {
+  if (!_audioEl) {
+    _audioEl = new Audio();
+    _audioEl.preload = "auto";
+    _audioEl.onended = () => { _voicing = false; NOTE("idle"); };
+    _audioEl.onpause = () => { _voicing = false; };
+  }
+  // one analyser for the element's lifetime → live amplitude for the orb
+  if (!_actx) {
+    try {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      _actx = new AC();
+      const src = _actx.createMediaElementSource(_audioEl);
+      _analyser = _actx.createAnalyser();
+      _analyser.fftSize = 512;
+      src.connect(_analyser);
+      _analyser.connect(_actx.destination);
+      const buf = new Uint8Array(_analyser.fftSize);
+      const tick = () => {
+        if (_voicing && !_audioEl.paused) {
+          _analyser.getByteTimeDomainData(buf);
+          let sum = 0;
+          for (let i = 0; i < buf.length; i++) { const v = (buf[i] - 128) / 128; sum += v * v; }
+          const rms = Math.sqrt(sum / buf.length);
+          if (Date.now() - _lastLevel > 90) { _lastLevel = Date.now(); NOTE("level", rms.toFixed(3)); }
+        }
+        requestAnimationFrame(tick);
+      };
+      requestAnimationFrame(tick);
+    } catch { _actx = null; }
+  }
+  try { _actx && _actx.state === "suspended" && _actx.resume(); } catch {}
+}
 function pickMaleVoice() {
   try {
     const vs = speechSynthesis.getVoices() || [];
@@ -336,7 +372,8 @@ async function speak(text) {
   NOTE("speaking", clean.slice(0, 100));
   // 1) your male edge-TTS voice from the backend
   try {
-    if (_audioEl) { try { _audioEl.pause(); } catch { } }
+    _ensureAudio();
+    try { _audioEl.pause(); } catch { }
     const r = await fetch(API + "/api/tts", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ text: clean })
@@ -344,11 +381,13 @@ async function speak(text) {
     const ct = r.headers.get("content-type") || "";
     if (r.ok && ct.includes("audio")) {
       const blob = await r.blob();
+      if (_lastBlob) { try { URL.revokeObjectURL(_lastBlob); } catch {} }
       const url = URL.createObjectURL(blob);
-      _audioEl = new Audio(url);
-      _audioEl.onended = () => NOTE("idle");
+      _lastBlob = url;
+      _audioEl.src = url;
+      _voicing = true;
       try { speechSynthesis.cancel(); } catch { }
-      await _audioEl.play().catch(() => speakBrowser(clean));
+      await _audioEl.play().catch(() => { _voicing = false; speakBrowser(clean); });
       return;
     }
   } catch { /* backend TTS unavailable → browser male fallback */ }

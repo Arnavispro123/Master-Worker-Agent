@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<title>Place your orb</title>
+<style>
+  *{box-sizing:border-box;margin:0}
+  html,body{width:100%;height:100%;background:rgba(2,5,10,.62);overflow:hidden;
+    font:14px/1.5 "Segoe UI",system-ui,sans-serif;color:#dcefff}
+  body{display:flex;align-items:center;justify-content:center}
+  #box{text-align:center}
+  h1{font-size:22px;margin-bottom:6px;text-shadow:0 0 20px rgba(56,225,255,.6)}
+  p{color:#8aa5bd;margin-bottom:16px}
+  #map{display:grid;grid-template-columns:repeat(4,150px);grid-template-rows:repeat(2,110px);
+    gap:10px;justify-content:center}
+  #map button{border-radius:14px;border:1px solid rgba(56,225,255,.35);cursor:pointer;
+    background:rgba(13,22,38,.85);color:#dcefff;font-size:13px;font-weight:600}
+  #map button small{display:block;color:#8aa5bd;font-weight:400;font-size:11px;margin-top:2px}
+  #map button:hover{background:rgba(56,225,255,.22);box-shadow:0 0 18px rgba(56,225,255,.4)}
+</style>
+</head>
+<body>
+<div id="box">
+  <h1>Where should I rest, sir?</h1>
+  <p>Pick a home for your orb. You can drag it anywhere later.</p>
+  <div id="map"></div>
+</div>
+<script>
+(function () {
+  const names = ["top left", "top centre-left", "top centre-right", "top right",
+                 "bottom left", "bottom centre-left", "bottom centre-right", "bottom right"];
+  const map = document.getElementById("map");
+  for (let z = 0; z < 8; z++) {
+    const b = document.createElement("button");
+    const col = (z % 4) + 1, row = Math.floor(z / 4) + 1;
+    b.innerHTML = (z + 1) + "<small>" + names[z] + "</small>";
+    b.onclick = () => {
+      try { window.jarvisAPI && window.jarvisAPI.orbPlaced && window.jarvisAPI.orbPlaced(z); } catch {}
+    };
+    map.appendChild(b);
+  }
+  // default to bottom-right if they just close/ignore it
+  setTimeout(() => {
+    try { window.jarvisAPI && window.jarvisAPI.orbPlaced && window.jarvisAPI.orbPlaced(7); } catch {}
+  }, 120000);
+})();
+</script>
+</body>
+</html>

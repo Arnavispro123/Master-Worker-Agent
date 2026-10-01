@@ -9,6 +9,7 @@
     font:12px/1.45 "Segoe UI",system-ui,sans-serif;color:#dcefff;-webkit-user-select:none}
   body{display:flex;flex-direction:column;align-items:center;justify-content:flex-end;gap:8px;padding:10px;cursor:pointer}
   #orb{width:150px;height:150px;border-radius:50%;position:relative;flex-shrink:0;
+    transform-origin:center;will-change:transform;
     background:radial-gradient(circle at 35% 32%,rgba(216,251,255,.95),rgba(56,225,255,.85) 42%,rgba(11,58,82,.92) 78%);
     box-shadow:0 0 34px rgba(56,225,255,.45),inset 0 0 22px rgba(255,255,255,.28);
     border:1px solid rgba(216,251,255,.5);transition:box-shadow .3s}
@@ -40,6 +41,21 @@
 const API = (window.jarvisAPI && window.jarvisAPI.base) || "http://127.0.0.1:8765";
 const seen = new Set();
 let hideT = null;
+/* voice-reactive radius: HUD streams amplitude (~12Hz) while speaking */
+const orbEl = document.getElementById("orb");
+let targetAmp = 0, lastLevelAt = 0, curScale = 1;
+function loop(t) {
+  const stale = Date.now() - lastLevelAt > 260;
+  const st = document.body.dataset.s;
+  let want = 1;
+  if (!stale) want = 1 + Math.min(0.35, targetAmp * 1.4);       // live voice
+  else if (st === "speaking") want = 1 + 0.06 * (0.5 + 0.5 * Math.sin(t / 130)); // fallback wobble
+  else if (st === "listening") want = 1 + 0.03 * Math.sin(t / 400);
+  curScale += (want - curScale) * 0.35;
+  orbEl.style.transform = "scale(" + curScale.toFixed(3) + ")";
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
 function show(state, text) {
   document.body.dataset.s = state;
   document.getElementById("state").textContent = state;
@@ -58,6 +74,8 @@ function show(state, text) {
 try {
   window.jarvisAPI && window.jarvisAPI.onOrb && window.jarvisAPI.onOrb(d => {
     if (!d) return;
+    if (d.activity === "level") { targetAmp = Math.max(0, Math.min(1, +d.level || 0)); lastLevelAt = Date.now(); return; }
+    targetAmp = 0;
     show(d.activity || "idle", d.text);
   });
 } catch {}
@@ -82,9 +100,30 @@ setInterval(async () => {
     document.getElementById("dot").classList.add("off");
   }
 }, 5000);
-document.body.addEventListener("click", () => {
-  try { window.jarvisAPI && window.jarvisAPI.orbClick && window.jarvisAPI.orbClick(); } catch {}
-});
+/* drag anywhere to rest it where you like (click = open Jarvis) */
+(function () {
+  let down = false, sx = 0, sy = 0, moved = false;
+  const api = () => (window.jarvisAPI || {});
+  document.body.addEventListener("mousedown", e => {
+    if (e.button !== 0) return;
+    down = true; moved = false; sx = e.screenX; sy = e.screenY;
+  });
+  window.addEventListener("mousemove", e => {
+    if (!down) return;
+    const dx = e.screenX - sx, dy = e.screenY - sy;
+    if (Math.abs(e.screenX - sx) + Math.abs(e.screenY - sy) > 4) moved = true;
+    if (moved) {
+      try { api().orbDrag && api().orbDrag(dx, dy); } catch {}
+      sx = e.screenX; sy = e.screenY;
+    }
+  });
+  window.addEventListener("mouseup", () => {
+    if (!down) return;
+    down = false;
+    if (moved) { try { api().orbDragEnd && api().orbDragEnd(); } catch {} }
+    else { try { api().orbClick && api().orbClick(); } catch {} }
+  });
+})();
 </script>
 </body>
 </html>
