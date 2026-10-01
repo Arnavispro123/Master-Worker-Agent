@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>JARVIS</title>
+<title>JARVIS — Just A Rather Very Intelligent System</title>
 <link rel="stylesheet" href="styles.css"/>
 </head>
 <body>
@@ -22,49 +22,86 @@
       <option value="anthropic">anthropic</option>
     </select>
     <select id="model" title="Model — live list for the provider"><option value="">auto model</option></select>
-    <button id="keysBtn" title="API keys — paste in app, models load live">🔑 keys</button>
-    <button id="screenBtn" title="Screenshot">📷</button>
+    <button id="keysBtn" title="API keys — paste in app, models load live">Keys</button>
+    <button id="screenBtn" title="Take a screenshot">Screenshot</button>
     <label class="auto" title="Agent mode: Jarvis thinks + runs commands by itself"><input type="checkbox" id="agentMode"/> agent</label>
     <label class="auto" title="Allow AI to click without asking"><input type="checkbox" id="autopilot"/> autopilot</label>
   </div>
 </header>
 
 <main class="layout">
-  <section class="left">
+  <aside class="left">
     <canvas id="reactor" width="300" height="300"></canvas>
     <canvas id="wave" width="300" height="64"></canvas>
     <div class="status" id="status">initializing…</div>
     <div class="voiceRow">
-      <button id="micBtn" class="mic">🎙 hold / click to talk</button>
-      <button id="speakToggle" class="ghost on">🔊 voice replies ON</button>
+      <button id="micBtn" class="mic">Talk</button>
+      <button id="speakToggle" class="ghost on">Voice replies on</button>
     </div>
     <div class="voiceRow">
-      <button id="wakeBtn" class="ghost" title="Always-listening wake word — offline, no API keys">👂 wake: OFF</button>
-      <span class="hint" id="wakeHint">says “jarvis” → talks</span>
+      <button id="wakeBtn" class="ghost" title="Always-listening wake word — offline, no API keys">Wake word: off</button>
+      <span class="hint" id="wakeHint">say “jarvis” → talks</span>
     </div>
     <div class="screenBox">
-      <div class="screenHead"><span>VISION</span><button id="seeBtn" class="ghost">what do you see?</button></div>
-      <img id="screenImg" alt="screenshot preview — press 📷"/>
+      <div class="screenHead"><span>VISION</span><button id="seeBtn" class="ghost">What do you see?</button></div>
+      <img id="screenImg" alt="screenshot preview — press Screenshot"/>
     </div>
-  </section>
+  </aside>
 
   <section class="right">
-    <div id="chat"></div>
+    <div id="chat">
+      <div id="hero">
+        <div class="hero-orb"></div>
+        <h1 id="heroTitle">Good evening, sir.</h1>
+        <p>Voice, vision, agents and research — pick a provider above or press <b>Keys</b> to add one free. Try one:</p>
+        <div class="chips">
+          <button data-chip="what time is it">Time</button>
+          <button data-chip="research black holes">Research</button>
+          <button data-chip="open youtube">Open YouTube</button>
+          <button data-chip="do: organize my downloads">Agent task</button>
+        </div>
+      </div>
+    </div>
     <form id="form">
-      <button type="button" id="plusBtn" title="screenshot + send">＋📷</button>
-      <input id="input" autocomplete="off" placeholder='Ask anything… “research black holes” goes online • “do: …” runs it • Ctrl+K'/>
-      <button type="submit" id="send">➤</button>
+      <button type="button" id="plusBtn" title="Attach a screenshot to the next message">+Shot</button>
+      <input id="input" autocomplete="off" placeholder="Ask anything…  Ctrl+K for commands"/>
+      <button type="submit" id="send" title="Send">➤</button>
     </form>
+    <div class="hintline">Enter to send · Alt+J voice · Ctrl+K commands</div>
   </section>
 </main>
 
 <div id="keysModal" class="modal hidden">
   <div class="card wide">
-    <h3>🔑 API Keys — paste here, models appear live <small>(saved to backend .env, keys masked)</small></h3>
-    <p class="hint">Free path: <b>OpenCode</b> (auto-detected) / <b>OpenRouter</b> / <b>Groq</b> / <b>Gemini</b> / <b>Ollama local</b>. Paid: OpenAI, Anthropic. Paste → Save → model list refreshes from the provider <i>right now</i>.</p>
+    <h3>API Keys <small>saved to backend .env · shown masked · never logged</small></h3>
+    <p class="hint">Free path: <b>OpenCode</b> (auto-detected) / <b>OpenRouter</b> / <b>Groq</b> / <b>Gemini</b> / <b>Ollama local</b>. Paid: OpenAI, Anthropic. Paste → Save → models refresh live.</p>
     <div id="keyRows"></div>
-    <div class="row"><button id="saveKeys">Save keys</button><button id="refreshModels">↻ refresh models</button><button id="closeKeys" class="ghost">Close</button></div>
+    <div class="row"><button id="saveKeys">Save keys</button><button id="refreshModels">Refresh models</button><button id="closeKeys" class="ghost">Close</button></div>
     <div id="provStatus" class="prov"></div>
+  </div>
+</div>
+
+<div id="seeModal" class="modal hidden">
+  <div class="card">
+    <h3>Ask about your screen</h3>
+    <input id="seeInput" value="What do you see? Summarize the windows and suggest a next action."/>
+    <div class="row"><button id="seeGo">Ask Jarvis</button><button id="seeClose" class="ghost">Cancel</button></div>
+  </div>
+</div>
+
+<div id="paletteModal" class="modal hidden">
+  <div class="card">
+    <h3>Commands <small>Ctrl+K</small></h3>
+    <div class="pal-grid">
+      <button data-pal="/agent ">Run an agent task</button>
+      <button data-pal="/research ">Research the web</button>
+      <button data-pal="/see ">Describe my screen</button>
+      <button data-pal="/screenshot">Take screenshot</button>
+      <button data-pal="/click ">Click something…</button>
+      <button data-pal="/search ">Web search…</button>
+    </div>
+    <input id="palInput" placeholder="…or type here, Enter to run"/>
+    <div class="row"><button id="palClose" class="ghost">Close</button></div>
   </div>
 </div>
 

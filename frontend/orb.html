@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<title>JARVIS orb</title>
+<style>
+  *{box-sizing:border-box;margin:0}
+  html,body{width:100%;height:100%;background:transparent;overflow:hidden;
+    font:12px/1.45 "Segoe UI",system-ui,sans-serif;color:#dcefff;-webkit-user-select:none}
+  body{display:flex;flex-direction:column;align-items:center;justify-content:flex-end;gap:8px;padding:10px;cursor:pointer}
+  #orb{width:150px;height:150px;border-radius:50%;position:relative;flex-shrink:0;
+    background:radial-gradient(circle at 35% 32%,rgba(216,251,255,.95),rgba(56,225,255,.85) 42%,rgba(11,58,82,.92) 78%);
+    box-shadow:0 0 34px rgba(56,225,255,.45),inset 0 0 22px rgba(255,255,255,.28);
+    border:1px solid rgba(216,251,255,.5);transition:box-shadow .3s}
+  #orb::after{content:"";position:absolute;inset:14px;border-radius:50%;
+    border:1px solid rgba(216,251,255,.35)}
+  body[data-s="listening"] #orb{animation:pulse .9s infinite}
+  body[data-s="speaking"] #orb{animation:pulse 1.6s infinite}
+  body[data-s="working"] #orb{box-shadow:0 0 52px rgba(139,123,255,.75),inset 0 0 22px rgba(255,255,255,.3)}
+  @keyframes pulse{50%{box-shadow:0 0 64px rgba(56,225,255,.85),inset 0 0 22px rgba(255,255,255,.4);transform:scale(1.04)}}
+  #panel{width:100%;background:rgba(6,12,24,.72);border:1px solid rgba(56,225,255,.22);
+    border-radius:14px;padding:8px 11px;backdrop-filter:blur(6px);text-align:center}
+  #state{font-weight:700;letter-spacing:1px;font-size:11px;color:#38e1ff;text-transform:uppercase}
+  #dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:#4ade80;margin-right:6px;box-shadow:0 0 7px #4ade80}
+  #dot.off{background:#ff6b6b;box-shadow:0 0 7px #ff6b6b}
+  #last{color:#b9d9ec;font-size:11.5px;margin-top:3px;min-height:16px;
+    display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+  #feed{font-size:10.5px;color:#54708a;margin-top:2px;min-height:14px;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
+</style>
+</head>
+<body data-s="idle">
+  <div id="orb"></div>
+  <div id="panel">
+    <div><span id="dot"></span><span id="state">standby</span></div>
+    <div id="last">click me to open Jarvis</div>
+    <div id="feed"></div>
+  </div>
+<script>
+const API = (window.jarvisAPI && window.jarvisAPI.base) || "http://127.0.0.1:8765";
+const seen = new Set();
+let hideT = null;
+function show(state, text) {
+  document.body.dataset.s = state;
+  document.getElementById("state").textContent = state;
+  if (text) {
+    document.getElementById("last").textContent = text;
+    const f = document.getElementById("feed");
+    f.textContent = text.slice(0, 90);
+  }
+  clearTimeout(hideT);
+  if (state !== "listening") hideT = setTimeout(() => {
+    document.body.dataset.s = "idle";
+    document.getElementById("state").textContent = "standby";
+  }, 9000);
+}
+// HUD events forwarded by main process
+try {
+  window.jarvisAPI && window.jarvisAPI.onOrb && window.jarvisAPI.onOrb(d => {
+    if (!d) return;
+    show(d.activity || "idle", d.text);
+  });
+} catch {}
+// background wake works even with the main window closed
+setInterval(async () => {
+  try {
+    const p = await (await fetch(API + "/api/wake/poll")).json();
+    for (const h of (p.hits || [])) {
+      if (h.kind !== "command" || !h.text) continue;
+      const k = h.n + "::" + h.text;
+      if (seen.has(k)) continue;
+      seen.add(k);
+      show("heard", h.text);
+    }
+  } catch {}
+}, 1500);
+setInterval(async () => {
+  try {
+    const r = await (await fetch(API + "/api/health")).json();
+    document.getElementById("dot").classList.toggle("off", !r.ok);
+  } catch {
+    document.getElementById("dot").classList.add("off");
+  }
+}, 5000);
+document.body.addEventListener("click", () => {
+  try { window.jarvisAPI && window.jarvisAPI.orbClick && window.jarvisAPI.orbClick(); } catch {}
+});
+</script>
+</body>
+</html>

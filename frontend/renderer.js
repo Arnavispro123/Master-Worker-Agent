@@ -38,6 +38,28 @@ function wave(level = 0.15) {
 wave();
 
 function toast(m) { const e = $("toast"); e.textContent = m; e.style.display = "block"; setTimeout(() => e.style.display = "none", 3000); }
+/* HUD → orb bridge (Electron only; silent no-op in browsers) */
+function NOTE(kind, text) {
+  try { if (window.jarvisAPI && window.jarvisAPI.notify) window.jarvisAPI.notify(kind, text); } catch {}
+}
+/* rich chat rendering: linkified sources + collapsible agent trace */
+function richBody(shown) {
+  let main = String(shown || ""), trace = "";
+  for (const sep of ["— agent trace —", "— trace —"]) {
+    const i = main.indexOf(sep);
+    if (i !== -1) { trace = main.slice(i + sep.length).trim(); main = main.slice(0, i).trim(); break; }
+  }
+  let html = esc(main).replace(/\n/g, "<br>");
+  html = html.replace(/(https?:\/\/[^\s<]+)/g, '<a href="$1" target="_blank" rel="noopener">$1</a>');
+  let out = `<div>${html}</div>`;
+  if (trace) {
+    const rows = trace.split(/\n+/).map(s => s.trim()).filter(Boolean);
+    const n = rows.filter(s => /^step \d+/i.test(s)).length;
+    const lis = rows.map(s => `<li>${esc(s.replace(/^step \d+:\s*/i, ""))}</li>`).join("");
+    out += `<details class="trace"><summary>Agent trace${n ? ` (${n} steps)` : ""}</summary><ol>${lis}</ol></details>`;
+  }
+  return out;
+}
 function esc(s) { return String(s).replace(/</g, "&lt;"); }
 /* speakable: what the voice is ALLOWED to read. Traces, JSON, URLs, code
    and tags stay on screen only — never spoken. */
@@ -185,10 +207,14 @@ async function send(text, shot = false) {
   const now = Date.now();
   if (text.trim() === _lastSend.text && now - _lastSend.t < 2500) { toast("already on it…"); return; }
   _lastSend = { text: text.trim(), t: now };
+  const hero = $("hero");
+  if (hero) hero.style.display = "none";
+  NOTE("thinking", text.slice(0, 100));
   try { if (_sendAbort) _sendAbort.abort(); } catch { }
   _sendAbort = new AbortController();
   addMsg("you", text); input.value = "";
   const bubble = addMsg("jarvis", "…");
+  bubble.firstChild.innerHTML = '<span class="typing"><i></i><i></i><i></i></span>';
   const agentMode = $("agentMode").checked;
   try {
     const r = await (await fetch(API + "/api/chat", {
@@ -199,11 +225,13 @@ async function send(text, shot = false) {
     if (r.steps && r.steps.length) {
       shown += "\n\n— agent trace —\n" + r.steps.map(s => `step ${s.step}: ${((s.actions || []).map(a => a.tool).join(", ") || "answer")}`).join("\n");
     }
-    bubble.firstChild.textContent = shown;
+    bubble.firstChild.innerHTML = richBody(shown);
     bubble._fullText = shown;
     if (r.image) { const im = document.createElement("img"); im.src = r.image; bubble.appendChild(im); $("screenImg").src = r.image; }
     const meta = document.createElement("div");
-    meta.className = "meta"; meta.textContent = `${r.provider || "?"}${r.model ? " / " + r.model : ""}${agentMode ? " • agent" : ""}`;
+    meta.className = "meta";
+    const _t = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    meta.textContent = `${r.provider || "?"}${r.model ? " / " + r.model : ""}${agentMode ? " • agent" : ""} • ${_t}`;
     bubble.appendChild(meta);
     if (r.need_confirm) {
       const row = document.createElement("div");
@@ -223,9 +251,10 @@ async function send(text, shot = false) {
 form.onsubmit = e => { e.preventDefault(); send(input.value); };
 async function runAgentGoal(goal) {
   addMsg("you", "🤖 " + goal);
+  NOTE("working", goal.slice(0, 100));
   const b = addMsg("jarvis", "agent working — thinking + running tools…");
   const r = await (await fetch(API + "/api/agent/run", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ goal, provider: $("provider").value, model: $("model").value || null }) })).json();
-  b.firstChild.textContent = r.final + (r.steps ? "\n\n— trace —\n" + r.steps.map(s => `step ${s.step}: ${(s.actions || []).map(a => a.tool + " " + JSON.stringify(a.args || {}).slice(0, 100)).join("; ") || "answer"}\n  → ${String(s.observation || "").slice(0, 200)}`).join("\n") : "");
+  b.firstChild.innerHTML = richBody(r.final + (r.steps ? "\n\n— trace —\n" + r.steps.map(s => `step ${s.step}: ${(s.actions || []).map(a => a.tool + " " + JSON.stringify(a.args || {}).slice(0, 100)).join("; ") || "answer"}\n  → ${String(s.observation || "").slice(0, 200)}`).join("\n") : ""));
   b._fullText = b.firstChild.textContent;
   if (voiceOn) speak(r.final);
 }
@@ -237,16 +266,21 @@ $("screenBtn").onclick = async () => {
   if (r.image_b64) { $("screenImg").src = "data:image/jpeg;base64," + r.image_b64; toast("screenshot captured"); }
   else toast("screenshot failed: " + (r.error || "unknown"));
 };
-$("seeBtn").onclick = async () => {
-  const q = prompt("Ask about your screen:", "What do you see? Summarize windows and suggest next action.");
-  if (!q) return;
+async function askScreen(q) {
+  if (!q || !q.trim()) return;
   addMsg("you", "👁 " + q);
   const b = addMsg("jarvis", "looking at your screen…");
+  NOTE("working", q.slice(0, 100));
   const r = await (await fetch(API + "/api/vision/ask", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ question: q, provider: $("provider").value, model: $("model").value || null }) })).json();
-  b.firstChild.textContent = r.text;
+  b.firstChild.innerHTML = richBody(r.text);
+  b._fullText = r.text;
   if (r.image) { const im = document.createElement("img"); im.src = r.image; b.appendChild(im); $("screenImg").src = r.image; }
   if (voiceOn) speak(r.text);
-};
+}
+$("seeBtn").onclick = () => { $("seeModal").classList.remove("hidden"); setTimeout(() => $("seeInput").focus(), 50); };
+$("seeClose").onclick = () => $("seeModal").classList.add("hidden");
+$("seeGo").onclick = () => { $("seeModal").classList.add("hidden"); askScreen($("seeInput").value); };
+$("seeInput").addEventListener("keydown", e => { if (e.key === "Enter") $("seeGo").click(); });
 $("autopilot").onchange = async e => {
   await fetch(API + "/api/control/mode", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ autopilot: e.target.checked }) });
   toast("autopilot " + (e.target.checked ? "ON — I can click freely, sir." : "OFF"));
@@ -285,7 +319,7 @@ function speakBrowser(text) {
     const chunks = String(text).match(/[^.!?]+[.!?]+|[^.!?]+$/g) || [text];
     let i = 0;
     const next = () => {
-      if (i >= chunks.length) return;
+      if (i >= chunks.length) { NOTE("idle"); return; }
       const u = new SpeechSynthesisUtterance(chunks[i++].trim().slice(0, 220));
       if (_maleVoice) u.voice = _maleVoice;
       u.lang = (_maleVoice && _maleVoice.lang) || "en-GB";
@@ -299,6 +333,7 @@ function speakBrowser(text) {
 async function speak(text) {
   const clean = speakable(text);
   if (!clean) return;
+  NOTE("speaking", clean.slice(0, 100));
   // 1) your male edge-TTS voice from the backend
   try {
     if (_audioEl) { try { _audioEl.pause(); } catch { } }
@@ -311,6 +346,7 @@ async function speak(text) {
       const blob = await r.blob();
       const url = URL.createObjectURL(blob);
       _audioEl = new Audio(url);
+      _audioEl.onended = () => NOTE("idle");
       try { speechSynthesis.cancel(); } catch { }
       await _audioEl.play().catch(() => speakBrowser(clean));
       return;
@@ -319,7 +355,7 @@ async function speak(text) {
   // 2) browser fallback, forced male
   speakBrowser(clean);
 }
-$("speakToggle").onclick = e => { voiceOn = !voiceOn; e.target.textContent = voiceOn ? "🔊 voice replies ON" : "🔇 voice replies OFF"; e.target.classList.toggle("on", voiceOn); savePrefs(); };
+$("speakToggle").onclick = e => { voiceOn = !voiceOn; e.target.textContent = voiceOn ? "Voice replies on" : "Voice replies off"; e.target.classList.toggle("on", voiceOn); savePrefs(); };
 
 /* mic */
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -328,14 +364,15 @@ $("micBtn").onclick = () => {
   if (!SR) { toast("browser STT not supported — type instead"); return; }
   if (listening) { rec.stop(); return; }
   rec = new SR(); rec.lang = "en-US"; rec.interimResults = true;
-  $("micBtn").classList.add("live"); $("micBtn").textContent = "🔴 listening… click to stop"; listening = true;
+  $("micBtn").classList.add("live"); $("micBtn").textContent = "Listening — click to stop"; listening = true;
+  NOTE("listening");
   let final = "";
   rec.onresult = e => {
     let interim = "";
     for (const r of e.results) (r.isFinal ? final += r[0].transcript : interim += r[0].transcript);
     input.value = final + interim;
   };
-  rec.onend = () => { $("micBtn").classList.remove("live"); $("micBtn").textContent = "🎙 hold / click to talk"; listening = false; if (final.trim()) send(final.trim()); };
+  rec.onend = () => { $("micBtn").classList.remove("live"); $("micBtn").textContent = "Talk"; listening = false; NOTE("idle"); if (final.trim()) send(final.trim()); };
   rec.onerror = () => { listening = false; $("micBtn").classList.remove("live"); };
   rec.start();
 };
@@ -353,7 +390,7 @@ async function loadPrefs() {
     if (typeof p.agent_mode === "boolean") $("agentMode").checked = p.agent_mode;
     if (typeof p.voice_on === "boolean" && !p.voice_on) {
       voiceOn = false;
-      $("speakToggle").textContent = "🔇 voice replies OFF";
+      $("speakToggle").textContent = "Voice replies off";
       $("speakToggle").classList.remove("on");
     }
     if (typeof p.wake_on === "boolean") {
@@ -384,7 +421,7 @@ function savePrefs() {
    for "jarvis / hey jarvis / computer". Tier 2: backend sounddevice+google
    voice loop via /api/wake/* (same stack as your proven build). */
 let wakeOn = localStorage.getItem("jarvis_wake") === "1", wakeRec = null, lastWakeFire = 0;
-function setWakeUI() { $("wakeBtn").textContent = wakeOn ? "👂 wake: LISTENING (say “jarvis”)" : "👂 wake: OFF"; $("wakeBtn").classList.toggle("on", wakeOn); }
+function setWakeUI() { $("wakeBtn").textContent = wakeOn ? "Wake word: listening" : "Wake word: off"; $("wakeBtn").classList.toggle("on", wakeOn); }
 setWakeUI();
 function stripWakeWord(txt) {
   const m = String(txt || "").toLowerCase().match(/(hey jarvis|jarvis|computer)\s*(.*)/);
@@ -406,12 +443,14 @@ function startBrowserWake() {
     if (cmd) {
       // "jarvis how are you" in ONE breath → run it now. No "Yes sir?" first.
       input.value = cmd;
-      toast("👂 heard: " + cmd.slice(0, 80));
+      toast("Heard: " + cmd.slice(0, 80));
+      NOTE("heard", cmd);
       send(cmd);
       setTimeout(() => { if (wakeOn) startBrowserWake(); }, 3000);
     } else {
       // lone "jarvis" → invite, then mic takes the command (echoes into input)
-      toast("👂 yes sir? listening…");
+      toast("Yes sir? listening…");
+      NOTE("listening");
       speak("Yes sir?");
       setTimeout(() => $("micBtn").click(), 600);
       setTimeout(() => { if (wakeOn) startBrowserWake(); }, 12000);
@@ -436,7 +475,8 @@ async function startBackendWake() {
         if (_seenCmds.has(key)) continue;
         _seenCmds.add(key);
         input.value = h.text;  // prompt lands in the text space
-        toast("👂 heard: " + h.text.slice(0, 80));
+        toast("Heard: " + h.text.slice(0, 80));
+        NOTE("heard", h.text);
         send(h.text);  // real AI reply + voice
       }
     } catch { }
@@ -454,17 +494,43 @@ $("wakeBtn").onclick = () => {
 /* boot: restore saved prefs (provider/model/switches), then resume wake if it was on */
 loadPrefs().then(() => { if (wakeOn) startBrowserWake(); });
 
+/* palette (no native prompts — everything in-app) */
+function openPalette(prefill = "") {
+  $("paletteModal").classList.remove("hidden");
+  $("palInput").value = prefill;
+  setTimeout(() => $("palInput").focus(), 50);
+}
+function closePalette() { $("paletteModal").classList.add("hidden"); }
+function runPaletteText(t) {
+  t = (t || "").trim();
+  if (!t) return;
+  closePalette();
+  if (t.startsWith("/agent")) runAgentGoal(t.replace("/agent", "").trim());
+  else send(t);
+}
+document.querySelectorAll("[data-pal]").forEach(b => {
+  b.onclick = () => {
+    const v = b.dataset.pal;
+    if (v.endsWith(" ")) { $("palInput").value = v; $("palInput").focus(); }
+    else runPaletteText(v);
+  };
+});
+$("palInput").addEventListener("keydown", e => { if (e.key === "Enter") runPaletteText($("palInput").value); });
+$("palClose").onclick = closePalette;
+/* hero suggestion chips */
+document.querySelectorAll("[data-chip]").forEach(b => { b.onclick = () => send(b.dataset.chip); });
+(function heroGreet() {
+  const h = new Date().getHours();
+  const day = h < 12 ? "morning" : h < 18 ? "afternoon" : "evening";
+  const el = $("heroTitle");
+  if (el) el.textContent = `Good ${day}, sir.`;
+})();
 /* palette */
 document.addEventListener("keydown", e => {
+  if (e.key === "Escape") { closePalette(); $("seeModal").classList.add("hidden"); $("keysModal").classList.add("hidden"); }
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
     e.preventDefault();
-    const c = prompt("chat | /agent <goal> (I run it) | /research <topic> (I read the web) | /see | /screenshot | /click <what> | /search <q>", "/research ");
-    if (c) (c.startsWith("/agent") ? runAgentGoal(c.replace("/agent", "").trim()) : send(c));
+    $("paletteModal").classList.contains("hidden") ? openPalette() : closePalette();
   }
   if (e.key === "j" && e.altKey) $("micBtn").click();
 });
-setTimeout(() => {
-  const h = new Date().getHours();
-  const day = h < 12 ? "morning" : h < 18 ? "afternoon" : "evening";
-  addMsg("jarvis", `Good ${day}, sir. Agent mode can run shell/files/web by itself — toggle “agent” or type “do: …”. Wake word 👂 works with zero keys. Press 🔑 to paste keys — models load live.`, "jarvis • ready");
-}, 600);
