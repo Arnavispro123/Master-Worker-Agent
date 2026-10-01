@@ -43,9 +43,16 @@ function wave(level = 0.15) {
 wave();
 
 function toast(m) { const e = $("toast"); e.textContent = m; e.style.display = "block"; setTimeout(() => e.style.display = "none", 3000); }
-/* HUD → orb bridge (Electron only; silent no-op in browsers) */
+/* HUD → orb bridge. Two lanes, both best-effort:
+   Electron IPC (instant, levels included) + backend activity bus (works from
+   ANY window — browser tab, second HUD, headless). */
 function NOTE(kind, text) {
+  const t = String(text || "").slice(0, 140);
   try { if (window.jarvisAPI && window.jarvisAPI.notify) window.jarvisAPI.notify(kind, text); } catch {}
+  if (kind === "level") return; // IPC-only, too chatty for HTTP
+  try {
+    fetch(API + "/api/activity", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ kind, text: t }) }).catch(() => {});
+  } catch {}
 }
 /* rich chat rendering: linkified sources + collapsible agent trace */
 function richBody(shown) {

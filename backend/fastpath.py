@@ -7,7 +7,9 @@ import re
 from datetime import datetime
 
 _PATTERNS = [
-    (re.compile(r"\b(what'?s the time|what time is it|current time|tell me the time|time right now|time now)\b"), "time"),
+    (re.compile(r"\b(what'?s the time|what is the time|what time is it|current time|tell me the time|tell the time|have the time|the time is|time right now|time now|time please)"), "time"),
+    # bare "the time" only counts when that's basically the whole message
+    (re.compile(r"^.{0,24}\bthe time\??$"), "time"),
     (re.compile(r"\b(what'?s (the |today'?s )?date|what day is it|what day is today|today'?s date|current date)\b"), "date"),
     (re.compile(r"\b(what time and date|current date and time|what'?s today)\b"), "both"),
 ]

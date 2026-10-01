@@ -219,6 +219,12 @@ function createTray() {
   tray.on('click', () => { if (win) { win.isVisible() ? win.hide() : win.show(); } });
 }
 
+// one Jarvis only: a second launch focuses the running one (no twin backends/orbs)
+if (!app.requestSingleInstanceLock()) app.quit();
+app.on('second-instance', () => {
+  if (win) { win.isVisible() ? win.focus() : win.show(); }
+});
+
 app.whenReady().then(() => {
   // mic permission for the HUD voice recorder (Electron denies media by default)
   try {

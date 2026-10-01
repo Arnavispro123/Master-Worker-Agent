@@ -22,6 +22,7 @@ from . import prefs as prefs_mod
 from . import fastpath as fastpath_mod
 from . import opener as opener_mod
 from . import research as research_mod
+from . import activity as activity_mod
 
 ROOT = Path(__file__).resolve().parent.parent
 FRONTEND = ROOT / "frontend"
@@ -354,6 +355,19 @@ def w_stop():
 @app.get("/api/wake/poll")
 def w_poll():
     return wake_mod.poll()
+
+# ── activity bus (orb + HUDs stay in sync no matter who acted) ──
+class ActivityIn(BaseModel):
+    kind: str = "idle"
+    text: str = ""
+
+@app.post("/api/activity")
+def a_push(b: ActivityIn):
+    return activity_mod.push(b.kind, b.text) or {"ok": True}
+
+@app.get("/api/activity/poll")
+def a_poll(since: int = 0):
+    return {"events": activity_mod.poll(since)}
 
 # ── user preferences (provider/model/switches/TTS — no keys, survives restart) ──
 @app.get("/api/prefs")

@@ -8,6 +8,13 @@
   html,body{width:100%;height:100%;background:transparent;overflow:hidden;
     font:12px/1.45 "Segoe UI",system-ui,sans-serif;color:#dcefff;-webkit-user-select:none}
   body{display:flex;flex-direction:column;align-items:center;justify-content:flex-end;gap:8px;padding:10px;cursor:pointer}
+  #orbwrap{position:relative;width:170px;height:170px;flex-shrink:0;display:flex;align-items:center;justify-content:center}
+  .ring{position:absolute;inset:4px;border-radius:50%;pointer-events:none;
+    border:1px solid rgba(56,225,255,.55);animation:ripple 2.8s ease-out infinite}
+  .ring.r2{animation-delay:1.4s}
+  @keyframes ripple{from{transform:scale(.82);opacity:.9}to{transform:scale(1.18);opacity:0}}
+  body[data-s="speaking"] .ring{animation-duration:1.1s;border-color:rgba(216,251,255,.8)}
+  body[data-s="listening"] .ring{animation-duration:1.6s}
   #orb{width:150px;height:150px;border-radius:50%;position:relative;flex-shrink:0;
     transform-origin:center;will-change:transform;
     background:radial-gradient(circle at 35% 32%,rgba(216,251,255,.95),rgba(56,225,255,.85) 42%,rgba(11,58,82,.92) 78%);
@@ -18,7 +25,7 @@
   body[data-s="listening"] #orb{animation:pulse .9s infinite}
   body[data-s="speaking"] #orb{animation:pulse 1.6s infinite}
   body[data-s="working"] #orb{box-shadow:0 0 52px rgba(139,123,255,.75),inset 0 0 22px rgba(255,255,255,.3)}
-  @keyframes pulse{50%{box-shadow:0 0 64px rgba(56,225,255,.85),inset 0 0 22px rgba(255,255,255,.4);transform:scale(1.04)}}
+  @keyframes pulse{50%{box-shadow:0 0 64px rgba(56,225,255,.85),inset 0 0 22px rgba(255,255,255,.4)}}
   #panel{width:100%;background:rgba(6,12,24,.72);border:1px solid rgba(56,225,255,.22);
     border-radius:14px;padding:8px 11px;backdrop-filter:blur(6px);text-align:center}
   #state{font-weight:700;letter-spacing:1px;font-size:11px;color:#38e1ff;text-transform:uppercase}
@@ -31,7 +38,7 @@
 </style>
 </head>
 <body data-s="idle">
-  <div id="orb"></div>
+  <div id="orbwrap"><div class="ring"></div><div class="ring r2"></div><div id="orb"></div></div>
   <div id="panel">
     <div><span id="dot"></span><span id="state">standby</span></div>
     <div id="last">click me to open Jarvis</div>
@@ -79,6 +86,18 @@ try {
     show(d.activity || "idle", d.text);
   });
 } catch {}
+// backend activity bus: reacts no matter which window acted (browser, HUD, headless)
+let actCursor = 0;
+setInterval(async () => {
+  try {
+    const p = await (await fetch(API + "/api/activity/poll?since=" + actCursor)).json();
+    for (const h of (p.events || [])) {
+      actCursor = Math.max(actCursor, h.id || 0);
+      if (!h.kind || h.kind === "idle") { show("idle"); continue; }
+      show(h.kind === "thinking" ? "working" : h.kind, h.text);
+    }
+  } catch {}
+}, 1000);
 // background wake works even with the main window closed
 setInterval(async () => {
   try {
