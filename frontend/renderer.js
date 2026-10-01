@@ -698,10 +698,12 @@ async function startBackendWake() {
         toast("Backend ears problem: " + String(st.error).slice(0, 150));
       } else if (!st.error) _lastWakeErr = "";
       for (const h of (p.hits || [])) {
+        if (h.kind === "heard" && !h.text) { toast("hearing you…"); continue; }
         if (h.kind !== "command" || !h.text) continue;  // skip "wake" dupes
         const key = h.n + "::" + h.text;
         if (_seenCmds.has(key)) continue;
         _seenCmds.add(key);
+        if (_seenCmds.size > 200) _seenCmds.delete(_seenCmds.values().next().value);
         input.value = h.text;  // prompt lands in the text space
         toast("Heard: " + h.text.slice(0, 80));
         NOTE("heard", h.text);

@@ -80,7 +80,10 @@ def _push(kind: str, text: str = "") -> None:
     elif kind == "command":
         STATE["commands"] += 1
     try:
-        _events.put_nowait({"kind": kind, "wake": kind == "wake", "text": text, "n": STATE["heard"]})
+        _events.put_nowait({"kind": kind, "wake": kind == "wake",
+                             "text": text, "n": STATE["heard"], "t": time.time()})
+        while _events.qsize() > 60:  # headless pile-up guard
+            _events.get_nowait()
     except Exception:
         pass
 
@@ -188,6 +191,7 @@ def _loop(words: list[str], gen: int) -> None:
                 continue
             if not _heard_wake(text, words):
                 continue
+            _push("heard", "")  # instant "hearing you…" — HUD/orb react NOW, not after STT+settle
 
             cmd = _strip_wake(text, words)
             # ── SETTLE (~1s): don't answer yet — user may still be talking.
@@ -307,11 +311,30 @@ def stop() -> dict:
     return status()
 
 
-def poll() -> dict:
+def poll(peek: bool = False) -> dict:
+    """Drain the queue by default (single sender wins — no double-send across tabs).
+    peek=True returns a snapshot WITHOUT draining (for the orb's display-only poll).
+    Stale (>60s) and overflow (>50) events are dropped either way."""
+    import time as _t
     hits = []
     try:
         while True:
-            hits.append(_events.get_nowait())
+            e = _events.get_nowait()
+            if _t.time() - float(e.get("t", 0)) > 60:
+                continue  # stale: user long gone, don't flood a fresh HUD
+            hits.append(e)
     except Exception:
         pass
+    if peek:
+        for e in hits:
+            try:
+                _events.put_nowait(e)
+            except Exception:
+                break
+        # cap: drop oldest beyond 50
+        while _events.qsize() > 50:
+            try:
+                _events.get_nowait()
+            except Exception:
+                break
     return {"hits": hits, "state": status()}

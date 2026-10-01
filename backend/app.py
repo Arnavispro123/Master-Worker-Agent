@@ -353,8 +353,8 @@ def w_stop():
     return wake_mod.stop()
 
 @app.get("/api/wake/poll")
-def w_poll():
-    return wake_mod.poll()
+def w_poll(peek: bool = False):
+    return wake_mod.poll(peek=peek)
 
 @app.post("/api/wake/test")
 def w_test(body: dict | None = None):

@@ -98,10 +98,10 @@ setInterval(async () => {
     }
   } catch {}
 }, 1000);
-// background wake works even with the main window closed
+// display-only peek: never drains the queue (the HUD chat owns delivery)
 setInterval(async () => {
   try {
-    const p = await (await fetch(API + "/api/wake/poll")).json();
+    const p = await (await fetch(API + "/api/wake/poll?peek=1")).json();
     for (const h of (p.hits || [])) {
       if (h.kind !== "command" || !h.text) continue;
       const k = h.n + "::" + h.text;
