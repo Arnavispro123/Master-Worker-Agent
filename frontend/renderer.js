@@ -132,7 +132,10 @@ async function loadModels(provider, force = false) {
     const models = r.models || [];
     sel.innerHTML = `<option value="">auto model${r.live ? ` (${models.length} live)` : " (curated)"}</option>` +
       models.map(m => `<option value="${esc(m)}">${esc(m)}</option>`).join("");
-  } catch { sel.innerHTML = `<option value="">auto model</option>`; }
+  } catch {
+    sel.innerHTML = `<option value="">backend offline — start it first</option>`;
+    toast("Backend offline — run: python main.py (or npm start)");
+  }
 }
 $("provider").onchange = e => { loadModels(e.target.value); savePrefs(); };
 $("model").onchange = () => savePrefs();
@@ -153,7 +156,13 @@ function buildKeyRows(status = {}) {
   }).join("");
 }
 async function refreshKeysUI() {
-  const s = await (await fetch(API + "/api/providers/status")).json();
+  let s;
+  try {
+    s = await (await fetch(API + "/api/providers/status")).json();
+  } catch {
+    $("provStatus").textContent = "Backend offline — keys can't load. Start it: python main.py (or npm start). Nothing was lost; your .env is untouched.";
+    return false;
+  }
   if (!$("keyRows").children.length) buildKeyRows(s);
   $("provStatus").innerHTML = Object.entries(s).map(([k, v]) => `${v.configured ? "🟢" : "⚪"} ${k} <small>${esc(v.key)}</small>`).join(" • ");
   // live models per provider (parallel, best-effort)
@@ -163,19 +172,31 @@ async function refreshKeysUI() {
       if (sel) sel.innerHTML = `<option value="">${r.live ? `⚡ ${r.models.length} live` : "curated"} — pick to use</option>` + (r.models || []).slice(0, 80).map(m => `<option>${esc(m)}</option>`).join("");
     }).catch(() => {});
   }
+  return true;
 }
 $("keysBtn").onclick = async () => { $("keysModal").classList.remove("hidden"); buildKeyRows(); await refreshKeysUI(); };
 $("closeKeys").onclick = () => $("keysModal").classList.add("hidden");
-$("refreshModels").onclick = async () => { await refreshKeysUI(); await loadModels($("provider").value, true); toast("models refreshed live"); };
+$("refreshModels").onclick = async () => {
+  const ok = await refreshKeysUI();
+  await loadModels($("provider").value, true);
+  toast(ok ? "models refreshed live" : "backend offline — start it first");
+};
 $("saveKeys").onclick = async () => {
   const body = {};
   for (const p of PROVIDERS) {
     const el = $("k_" + p);
     if (el && el.value) body[KEYMAP[p]] = el.value;
   }
-  await fetch(API + "/api/keys", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-  toast("keys saved — refreshing live models…");
-  await refreshKeysUI(); await loadModels($("provider").value, true);
+  if (!Object.keys(body).length) { toast("Nothing new pasted — type a key first (blank = keep)."); return; }
+  try {
+    const r = await (await fetch(API + "/api/keys", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })).json();
+    if (!r.ok) throw new Error("rejected");
+    for (const p of PROVIDERS) { const el = $("k_" + p); if (el) el.value = ""; }
+    toast("Keys saved to backend .env — refreshing live models…");
+    await refreshKeysUI(); await loadModels($("provider").value, true);
+  } catch {
+    toast("Save FAILED — backend offline. Start it (python main.py), then save again. Nothing was lost.");
+  }
 };
 document.addEventListener("click", async e => {
   const b = e.target.closest("[data-test]");
