@@ -356,6 +356,15 @@ def w_stop():
 def w_poll():
     return wake_mod.poll()
 
+@app.post("/api/wake/test")
+def w_test(body: dict | None = None):
+    secs = 4.0
+    try:
+        secs = float((body or {}).get("seconds", 4.0))
+    except Exception:
+        pass
+    return wake_mod.test_mic(max(2.0, min(8.0, secs)))
+
 # ── activity bus (orb + HUDs stay in sync no matter who acted) ──
 class ActivityIn(BaseModel):
     kind: str = "idle"

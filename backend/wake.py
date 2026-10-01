@@ -40,6 +40,11 @@ STATE = {
     "running": False,
     "heard": 0,
     "commands": 0,
+    "snippets": 0,
+    "stt_ok": 0,
+    "stt_err": 0,
+    "last_err": "",
+    "gen": 0,
     "engine": "none",
     "error": "",
     "words": ["jarvis", "hey jarvis", "computer"],
@@ -59,6 +64,13 @@ def set_on_command(fn: Callable[[str], None] | None) -> None:
 def status() -> dict:
     d = dict(STATE)
     d["queued"] = _events.qsize()
+    d["room"] = dict(voice_mod.LAST_CALIB)
+    try:
+        import sounddevice as sd
+        di = sd.default.device[0]
+        d["mic"] = str(sd.query_devices()[di]["name"])
+    except Exception as e:
+        d["mic"] = f"(unknown: {e})"
     return d
 
 
@@ -83,7 +95,63 @@ def _strip_wake(text: str, words: list[str]) -> str:
     return ""
 
 
-def _loop(words: list[str]) -> None:
+def _heard_wake(text: str, words: list[str]) -> bool:
+    """Exact match first, then fuzzy on the first words (Google hears
+    'travis'/'service' for 'jarvis' more often than you'd think)."""
+    low = (text or "").lower().strip()
+    if any(w in low for w in words):
+        return True
+    try:
+        import difflib
+        for w in low.split()[:2]:
+            if difflib.SequenceMatcher(None, w, "jarvis").ratio() >= 0.65:
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def _stt(r, audio) -> tuple[str | None, str]:
+    """Transcribe, accounting included. Returns (text|None, kind)."""
+    import speech_recognition as sr
+    STATE["snippets"] += 1
+    try:
+        text = r.recognize_google(audio)
+        STATE["stt_ok"] += 1
+        return (text or "").strip(), "ok"
+    except sr.UnknownValueError:
+        return None, "empty"
+    except Exception as e:
+        STATE["stt_err"] += 1
+        STATE["last_err"] = str(e)[:160]
+        return None, "error"
+
+
+def test_mic(seconds: float = 4.0) -> dict:
+    """Self-test: record N seconds, report room stats + transcript.
+    Proves every stage (mic → VAD → STT) in one shot."""
+    import speech_recognition as sr
+    audio, stats = voice_mod.record_fixed(seconds)
+    if audio is None:
+        return {"ok": False, "stats": stats, "verdict": "no microphone input — " + str(stats.get("error", "?"))}
+    rms, peak = stats["rms"], stats["peak"]
+    try:
+        text = sr.Recognizer().recognize_google(audio)
+    except sr.UnknownValueError:
+        text = ""
+    except Exception as e:
+        return {"ok": False, "stats": stats,
+                "verdict": f"mic works but speech-to-text failed ({e}). Check internet."}
+    if peak >= 32760 or rms > 8000:
+        verdict = "MIC OVERLOADED — input is clipping. Lower mic level / disable Mic Boost."
+    elif rms < 80:
+        verdict = "near-silent. Say something during the test, or raise mic level."
+    else:
+        verdict = "mic healthy."
+    return {"ok": True, "text": text, "stats": stats, "verdict": verdict}
+
+
+def _loop(words: list[str], gen: int) -> None:
     try:
         import speech_recognition as sr
         import sounddevice as sd
@@ -105,21 +173,20 @@ def _loop(words: list[str]) -> None:
     STATE["error"] = ""
     print(f"  [Voice] always-listening. Say 'Jarvis' + command. Unlimited hear; {SETTLE_S:g}s settle so I never cut you off.")
 
-    while STATE["running"]:
+    while STATE["running"] and gen == STATE["gen"]:
         try:
-            # 1) idle wake snippet (short; returns None on quiet timeout)
-            audio = voice_mod.record_until_silence(timeout=5, max_duration=8, calibrate_s=0)
-            if audio is None or not STATE["running"]:
+            # 1) idle wake snippet (short; returns None on quiet timeout).
+            # ALWAYS calibrated: a fixed threshold deafens quiet rooms.
+            audio = voice_mod.record_until_silence(timeout=5, max_duration=8, calibrate_s=0.8)
+            if audio is None or not (STATE["running"] and gen == STATE["gen"]):
                 continue
-            try:
-                text = r.recognize_google(audio)
-            except sr.UnknownValueError:
+            text, kind = _stt(r, audio)
+            if kind == "error":
+                time.sleep(3)  # STT backend throttling us — back off, don't spin
                 continue
-            except Exception:
-                time.sleep(0.3)
+            if text is None:
                 continue
-            low = text.lower().strip()
-            if not any(w in low for w in words):
+            if not _heard_wake(text, words):
                 continue
 
             cmd = _strip_wake(text, words)
@@ -128,7 +195,7 @@ def _loop(words: list[str]) -> None:
             # across `text` + trailing speech. Merge before deciding anything,
             # so we never blurt "Yes, Sir?" over the command.
             tail = voice_mod.record_until_silence(
-                timeout=SETTLE_S, max_duration=voice_mod.SAFETY_MAX_S, calibrate_s=0)
+                timeout=SETTLE_S, max_duration=voice_mod.SAFETY_MAX_S, calibrate_s=0.6)
             if tail is not None:
                 try:
                     extra = r.recognize_google(tail).strip()
@@ -150,21 +217,18 @@ def _loop(words: list[str]) -> None:
                 # long pauses) never aborts the listen.
                 voice_mod.speak_local("Yes, Sir?", play=True)
                 parts: list[str] = []
-                while STATE["running"]:
+                while STATE["running"] and gen == STATE["gen"]:
                     # timeout=None: wait forever for speech; each utterance
                     # still ends on silence-stop / safety cap / stop phrase.
-                    audio2 = voice_mod.record_until_silence(timeout=None, calibrate_s=0.4)
-                    if audio2 is None or not STATE["running"]:
+                    audio2 = voice_mod.record_until_silence(timeout=None, calibrate_s=0.6)
+                    if audio2 is None or not (STATE["running"] and gen == STATE["gen"]):
                         continue
-                    try:
-                        chunk = r.recognize_google(audio2).strip()
-                    except sr.UnknownValueError:
-                        continue  # mumble — keep waiting silently, don't nag
-                    except Exception:
-                        time.sleep(0.3)
+                    chunk, ckind = _stt(r, audio2)
+                    if ckind == "error":
+                        time.sleep(3)
                         continue
                     if not chunk:
-                        continue
+                        continue  # mumble — keep waiting silently, don't nag
                     # our own "Yes, Sir?" invite echoing back via speakers — ignore it
                     if chunk.lower().strip().rstrip(".,!?") in ("yes sir", "yes sirs", "yes", "sir"):
                         continue
@@ -184,12 +248,11 @@ def _loop(words: list[str]) -> None:
                     # "...and also ..." — merge up to 3 more utterances.
                     for _ in range(3):
                         tail2 = voice_mod.record_until_silence(
-                            timeout=2.0, max_duration=voice_mod.SAFETY_MAX_S, calibrate_s=0)
+                            timeout=2.0, max_duration=voice_mod.SAFETY_MAX_S, calibrate_s=0.6)
                         if tail2 is None:
                             break
-                        try:
-                            more = r.recognize_google(tail2).strip()
-                        except Exception:
+                        more, mkind = _stt(r, tail2)
+                        if mkind == "error" or not more:
                             break
                         if not more or voice_mod.is_filler_only(more):
                             continue
@@ -230,9 +293,10 @@ def start(words: list[str] | None = None) -> dict:
         return status()
     STATE["words"] = words or STATE["words"]
     STATE["running"] = True
+    STATE["gen"] += 1  # stale threads from an old start() retire themselves
     STATE["error"] = ""
     STATE["engine"] = "sounddevice+google(starting)"
-    _thread = threading.Thread(target=_loop, args=(STATE["words"],), daemon=True)
+    _thread = threading.Thread(target=_loop, args=(STATE["words"], STATE["gen"]), daemon=True)
     _thread.start()
     return status()
 

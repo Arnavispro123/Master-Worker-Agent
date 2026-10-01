@@ -729,6 +729,21 @@ $("ears").onchange = e => {
   if (wakeOn) startWake();
   else setWakeUI();
 };
+$("micTestBtn").onclick = async e => {
+  const b = e.target;
+  b.disabled = true;
+  toast("Test mic: say something — recording 4s…");
+  try {
+    const r = await (await fetch(API + "/api/wake/test", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ seconds: 4 })
+    })).json();
+    const st = r.stats || {};
+    if (r.ok && r.text) toast(`Heard you: "${r.text.slice(0, 100)}" (room ${Math.round(st.rms || 0)}) — ${r.verdict}`);
+    else toast(`Mic check: ${r.verdict || "failed"} (room rms ${Math.round(st.rms || 0)}, peak ${st.peak || 0})`);
+  } catch (err) { toast("Mic test failed — is the backend running?"); }
+  b.disabled = false;
+};
 /* boot: restore saved prefs (provider/model/switches), then resume wake if it was on */
 loadPrefs().then(() => {
   if (IS_ELECTRON && earsMode === "window") {

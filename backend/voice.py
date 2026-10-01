@@ -179,13 +179,37 @@ def speak_local(text: str, play: bool = True) -> str:
         return f"[tts unavailable: {e}]"
 
 
-def calibrate_ambient(duration_s: float = 1.0) -> float:
+# last measured room stats (for status/diagnostics)
+LAST_CALIB = {"rms": 0.0, "thr": 0.0}
+
+
+def _mic_device():
+    """Mic override: JARVIS_MIC_DEVICE=index or name-substring. None = system default."""
+    raw = (os.getenv("JARVIS_MIC_DEVICE", "") or "").strip()
+    if not raw:
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        pass
+    try:
+        import sounddevice as sd
+        for i, d in enumerate(sd.query_devices()):
+            if d.get("max_input_channels", 0) > 0 and raw.lower() in str(d.get("name", "")).lower():
+                return i
+    except Exception:
+        pass
+    return None
+
+
+def calibrate_ambient(duration_s: float = 1.0, device=None) -> float:
     """Measure room noise floor RMS so the threshold adapts to background noise."""
     try:
         import sounddevice as sd
         import numpy as np
+        dev = device if device is not None else _mic_device()
         n = int(SAMPLE_RATE * duration_s)
-        audio = sd.rec(n, samplerate=SAMPLE_RATE, channels=1, dtype="int16")
+        audio = sd.rec(n, samplerate=SAMPLE_RATE, channels=1, dtype="int16", device=dev)
         sd.wait()
         chunk = np.frombuffer(audio.tobytes(), dtype=np.int16).astype(float)
         rms = float(np.sqrt(max(1e-9, np.mean(chunk ** 2))))
@@ -200,6 +224,7 @@ def record_until_silence(
     silence_stop: float = SILENCE_STOP_S,
     calibrate_s: float = 0.8,
     threshold: float | None = None,
+    device=None,
 ) -> "object | None":
     """Record while the user speaks — unlimited hear time.
 
@@ -217,11 +242,17 @@ def record_until_silence(
     max_frames = int(max_duration / FRAME_S)
 
     if threshold is None:
-        ambient = calibrate_ambient(calibrate_s) if calibrate_s > 0 else 500.0
+        ambient = calibrate_ambient(calibrate_s, device) if calibrate_s > 0 else 500.0
         threshold = vad_threshold(ambient)
+        try:
+            LAST_CALIB["rms"] = float(ambient)
+        except Exception:
+            pass
+    LAST_CALIB["thr"] = float(threshold)
 
     frames: list = []
-    stream = sd.InputStream(samplerate=SAMPLE_RATE, channels=1, dtype="int16")
+    stream = sd.InputStream(samplerate=SAMPLE_RATE, channels=1, dtype="int16",
+                            device=device if device is not None else _mic_device())
     stream.start()
     silence_count = 0
     started = False
@@ -253,3 +284,22 @@ def record_until_silence(
         return None
     audio = np.concatenate(frames).astype(np.int16).tobytes()
     return sr.AudioData(audio, SAMPLE_RATE, 2)
+
+
+def record_fixed(seconds: float = 4.0, device=None) -> tuple["object | None", dict]:
+    """Record exactly N seconds (even silence) for the mic self-test.
+    Returns (AudioData|None, {rms, peak})."""
+    import sounddevice as sd
+    import numpy as np
+    import speech_recognition as sr
+    try:
+        dev = device if device is not None else _mic_device()
+        n = int(SAMPLE_RATE * max(1.0, min(8.0, seconds)))
+        audio = sd.rec(n, samplerate=SAMPLE_RATE, channels=1, dtype="int16", device=dev)
+        sd.wait()
+        chunk = np.frombuffer(audio.tobytes(), dtype=np.int16).astype(float)
+        rms = float(np.sqrt(max(1e-9, np.mean(chunk ** 2))))
+        peak = int(np.max(np.abs(chunk))) if len(chunk) else 0
+        return sr.AudioData(audio.tobytes(), SAMPLE_RATE, 2), {"rms": rms, "peak": peak}
+    except Exception as e:
+        return None, {"error": str(e)[:200]}
