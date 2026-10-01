@@ -125,18 +125,63 @@ async def _generate_speech(text: str, output_path: str) -> None:
     await communicate.save(output_path)
 
 
-def speak(text: str) -> str:
-    """Generate mp3 via user's edge-tts settings. Returns path for /api/tts."""
+def _tts_cache_path(text: str) -> str:
+    """Same words + same voice = same file. Skips regeneration (2-4s saved
+    on every repeat: 'Yes, Sir?', reminders, common replies)."""
+    import hashlib
+    key = hashlib.sha1(f"{TTS_VOICE}|{TTS_RATE}|{TTS_VOLUME}|{TTS_PITCH}|{text}".encode()).hexdigest()[:16]
+    return os.path.join(tempfile.gettempdir(), f"jarvis_tts_{key}.mp3")
+
+
+def _prune_tts_cache(keep: int = 50) -> None:
+    try:
+        import glob
+        files = sorted(glob.glob(os.path.join(tempfile.gettempdir(), "jarvis_tts_*.mp3")),
+                       key=os.path.getmtime)
+        for f in files[:-keep]:
+            try:
+                os.unlink(f)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
+def cached_tts(text: str) -> str:
+    """Edge-TTS mp3, from cache when identical. Returns path or ''."""
     clean = re.sub(r"<<[^>]+>>", "", text or "").strip()[:800]
     if not clean:
         return ""
+    out = _tts_cache_path(clean)
     try:
-        import edge_tts  # noqa: F401
-        out = os.path.join(tempfile.gettempdir(), "jarvis_tts.mp3")
-        asyncio.run(_generate_speech(clean, out))
-        return out
+        if os.path.exists(out) and os.path.getsize(out) > 1024:
+            return out
     except Exception:
         pass
+    try:
+        import edge_tts  # noqa: F401
+        tmp = out + ".tmp"
+        asyncio.run(_generate_speech(clean, tmp))
+        os.replace(tmp, out)
+        _prune_tts_cache()
+        return out
+    except Exception:
+        try:
+            if os.path.exists(tmp):
+                os.unlink(tmp)
+        except Exception:
+            pass
+        return ""
+
+
+def speak(text: str) -> str:
+    """Generate mp3 via user's edge-tts settings. Returns path for /api/tts."""
+    out = cached_tts(text)
+    if out:
+        return out
+    clean = re.sub(r"<<[^>]+>>", "", text or "").strip()[:800]
+    if not clean:
+        return ""
     try:
         import pyttsx3
         engine = pyttsx3.init()
@@ -158,10 +203,10 @@ def speak_local(text: str, play: bool = True) -> str:
         return ""
     if play and os.getenv("JARVIS_BACKEND_VOICE", "1") == "0":
         return "muted-hud-owns-voice"
+    tmp_path = cached_tts(clean)
+    if not tmp_path:
+        return "[tts unavailable]"
     try:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as tmp:
-            tmp_path = tmp.name
-        asyncio.run(_generate_speech(clean, tmp_path))
         if play:
             try:
                 subprocess.run(
@@ -170,10 +215,6 @@ def speak_local(text: str, play: bool = True) -> str:
                 )
             except Exception:
                 pass
-        try:
-            os.unlink(tmp_path)
-        except Exception:
-            pass
         return "spoken"
     except Exception as e:
         return f"[tts unavailable: {e}]"

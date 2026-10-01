@@ -200,19 +200,20 @@ def _loop(words: list[str], gen: int) -> None:
             # so we never blurt "Yes, Sir?" over the command.
             tail = voice_mod.record_until_silence(
                 timeout=SETTLE_S, max_duration=voice_mod.SAFETY_MAX_S, calibrate_s=0.6)
-            if tail is not None:
-                try:
-                    extra = r.recognize_google(tail).strip()
-                    if extra:
-                        extra_cmd = _strip_wake(extra, words) or extra
-                        if cmd and extra_cmd and extra_cmd.lower() not in cmd.lower():
-                            cmd = f"{cmd} {extra_cmd}"
-                        elif not cmd:
-                            cmd = extra_cmd
-                except sr.UnknownValueError:
-                    pass
-                except Exception:
-                    pass
+            try:
+                tail_secs = len(getattr(tail, "frame_data", b"") or b"") / 32000.0
+            except Exception:
+                tail_secs = 99.0
+            if tail is not None and tail_secs >= 0.6:
+                # shorter than this is breath/click — transcribing it only
+                # burns a 2-4s STT roundtrip for nothing
+                extra, ekind = _stt(r, tail)
+                if ekind == "ok" and extra:
+                    extra_cmd = _strip_wake(extra, words) or extra
+                    if cmd and extra_cmd and extra_cmd.lower() not in cmd.lower():
+                        cmd = f"{cmd} {extra_cmd}"
+                    elif not cmd:
+                        cmd = extra_cmd
 
             if not cmd:
                 # Genuine wake-only: user really stopped after "jarvis".
