@@ -21,10 +21,12 @@ function writePrefs(patch) {
 }
 
 function startBackend() {
-  // spawn python backend next to the app
+  // spawn python backend next to the app.
+  // HUD owns mic+speakers in Electron → backend stays silent (no double voice).
   const py = process.platform === 'win32' ? 'python' : 'python3';
   const script = path.join(__dirname, '..', 'backend', 'app.py');
-  backend = spawn(py, [script], { cwd: path.join(__dirname, '..'), stdio: 'ignore', shell: false });
+  const env = Object.assign({}, process.env, { JARVIS_BACKEND_VOICE: '0' });
+  backend = spawn(py, [script], { cwd: path.join(__dirname, '..'), stdio: 'ignore', shell: false, env });
   backend.on('error', () => console.log('backend spawn failed — run manually: python backend/app.py'));
 }
 
@@ -86,29 +88,42 @@ function showOrb(activity, text) {
   if (!orb || orb.isDestroyed()) return;
   try { orb.showInactive(); } catch {}
   try { orb.webContents.send('orb-activity', { activity, text: String(text || '').slice(0, 160), t: Date.now() }); } catch {}
-  clearTimeout(orbHideTimer);
-  if (activity !== 'listening') {
-    orbHideTimer = setTimeout(() => { try { orb.hide(); } catch {} }, 9000);
-  }
 }
 function hideOrb() {
+  orbBusy = false;
   clearTimeout(orbHideTimer);
-  try { orb && orb.hide(); } catch {}
+  try { orb && !orb.isDestroyed() && orb.hide(); } catch {}
 }
 
-/* HUD → orb bridge */
+/* HUD → orb bridge. Busy-state machine, not a dumb timer:
+   speaking/listening/working/thinking = STAY until explicit idle.
+   heard = show 9s (a command/thinking note always follows). */
+let orbBusy = false;
+function pokeOrbHide(ms) {
+  clearTimeout(orbHideTimer);
+  orbHideTimer = setTimeout(() => { orbBusy = false; try { orb && !orb.isDestroyed() && orb.hide(); } catch {} }, ms);
+}
 ipcMain.on('hud-activity', (_e, d) => {
   const kind = (d && d.kind) || 'idle';
   if (kind === 'level') {
-    // voice amplitude @~12Hz: forward only, no show/hide churn
-    try { orb && orb.webContents.send('orb-activity', { activity: 'level', level: d.level, t: Date.now() }); } catch {}
+    // voice amplitude @~12Hz: forward only + 30s watchdog in case idle is lost
+    try { orb && !orb.isDestroyed() && orb.webContents.send('orb-activity', { activity: 'level', level: d.level, t: Date.now() }); } catch {}
+    if (orbBusy) pokeOrbHide(30000);
     return;
   }
-  if (kind === 'speaking') showOrb('speaking', d.text);
-  else if (kind === 'listening') showOrb('listening', d.text || 'listening…');
-  else if (kind === 'working' || kind === 'thinking') showOrb('working', d.text);
-  else if (kind === 'heard') showOrb('heard', d.text);
-  else hideOrb();
+  if (kind === 'speaking' || kind === 'listening' || kind === 'working' || kind === 'thinking') {
+    orbBusy = true;
+    clearTimeout(orbHideTimer);
+    showOrb(kind === 'thinking' ? 'working' : kind, d.text);
+    return;
+  }
+  if (kind === 'heard') {
+    showOrb('heard', d.text);
+    if (!orbBusy) pokeOrbHide(9000);
+    return;
+  }
+  orbBusy = false;
+  pokeOrbHide(2500);
 });
 ipcMain.on('orb-click', () => {
   if (win) { win.show(); try { win.focus(); } catch {} }
@@ -200,6 +215,13 @@ function createTray() {
 }
 
 app.whenReady().then(() => {
+  // mic permission for the HUD voice recorder (Electron denies media by default)
+  try {
+    const { session } = require('electron');
+    session.defaultSession.setPermissionRequestHandler((wc, permission, cb) => {
+      cb(permission === 'media' || permission === 'audio-capture');
+    });
+  } catch {}
   startBackend();
   const prefs = readPrefs();
   if (!prefs.orb_placed && typeof prefs.orb_zone !== 'number') {

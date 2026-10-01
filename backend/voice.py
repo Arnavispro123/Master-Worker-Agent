@@ -148,12 +148,16 @@ def speak(text: str) -> str:
 
 
 def speak_local(text: str, play: bool = True) -> str:
-    """Blocking Jarvis-style speak: print + edge-tts + ffplay (user's exact flow)."""
+    """Blocking Jarvis-style speak: print + edge-tts + ffplay (user's exact flow).
+    In Electron the HUD owns the speakers (JARVIS_BACKEND_VOICE=0) so the backend
+    stays silent — no double voice / mic echo wars with the orb."""
     clean = re.sub(r"<<[^>]+>>", "", text or "").strip()
     if clean:
         print(f"\n  JARVIS: {clean}")
     if not clean:
         return ""
+    if play and os.getenv("JARVIS_BACKEND_VOICE", "1") == "0":
+        return "muted-hud-owns-voice"
     try:
         with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as tmp:
             tmp_path = tmp.name

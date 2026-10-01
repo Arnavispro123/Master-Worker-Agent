@@ -4,6 +4,10 @@ const $ = id => document.getElementById(id);
 const chat = $("chat"), form = $("form"), input = $("input");
 let history = [], voiceOn = true, withShot = false;
 let _sendAbort = null, _lastSend = { text: "", t: 0 };
+/* Electron's Chromium has no Google speech key, so Web Speech silently fails
+   there — use mic→WAV→backend-STT instead. Browsers keep Web Speech. */
+const IS_ELECTRON = !!(window.jarvisAPI && window.jarvisAPI.isElectron);
+let _micLevel = null; // live mic RMS → wave meter while recording
 const PROVIDERS = ["opencode", "openrouter", "groq", "gemini", "ollama", "openai", "anthropic"];
 const KEYMAP = { opencode: "OPENCODE_API_KEY", openrouter: "OPENROUTER_API_KEY", groq: "GROQ_API_KEY", gemini: "GEMINI_API_KEY", openai: "OPENAI_API_KEY", anthropic: "ANTHROPIC_API_KEY", ollama: null };
 const LINKS = { opencode: "https://opencode.ai/auth", openrouter: "https://openrouter.ai/keys", groq: "https://console.groq.com/keys", gemini: "https://aistudio.google.com/apikey", openai: "https://platform.openai.com/api-keys", anthropic: "https://console.anthropic.com/", ollama: "https://ollama.com/download" };
@@ -30,7 +34,8 @@ const wv = $("wave").getContext("2d");
 function wave(level = 0.15) {
   wv.clearRect(0, 0, 300, 64); wv.strokeStyle = "#35e0ff"; wv.beginPath();
   for (let x = 0; x < 300; x += 2) {
-    const y = 32 + Math.sin(x * 0.15 + Date.now() / 200) * 20 * level * (0.5 + Math.random());
+    const amp = (_micLevel != null ? Math.min(1, _micLevel * 9) : level);
+    const y = 32 + Math.sin(x * 0.15 + Date.now() / 200) * 20 * amp * (0.5 + Math.random());
     x ? wv.lineTo(x, y) : wv.moveTo(x, y);
   }
   wv.stroke(); requestAnimationFrame(() => wave(level));
@@ -265,6 +270,7 @@ async function send(text, shot = false) {
     }
     history.push({ role: "user", content: text }, { role: "assistant", content: shown.slice(0, 2000) });
     if (voiceOn && shown) speak(shown);
+    else NOTE("idle"); // text-only reply: task is done, orb may leave
   } catch (e) {
     if (e && e.name === "AbortError") { bubble.firstChild.textContent = "Stopped."; bubble._fullText = "Stopped."; }
     else bubble.firstChild.textContent = "Backend unreachable. Run: python main.py — " + e;
@@ -280,6 +286,7 @@ async function runAgentGoal(goal) {
   b.firstChild.innerHTML = richBody(r.final + (r.steps ? "\n\n— trace —\n" + r.steps.map(s => `step ${s.step}: ${(s.actions || []).map(a => a.tool + " " + JSON.stringify(a.args || {}).slice(0, 100)).join("; ") || "answer"}\n  → ${String(s.observation || "").slice(0, 200)}`).join("\n") : ""));
   b._fullText = b.firstChild.textContent;
   if (voiceOn) speak(r.final);
+  else NOTE("idle");
 }
 $("plusBtn").onclick = () => { withShot = !withShot; $("plusBtn").style.borderColor = withShot ? "#35e0ff" : ""; toast(withShot ? "📷 next message includes screenshot" : "screenshot off"); };
 
@@ -299,6 +306,7 @@ async function askScreen(q) {
   b._fullText = r.text;
   if (r.image) { const im = document.createElement("img"); im.src = r.image; b.appendChild(im); $("screenImg").src = r.image; }
   if (voiceOn) speak(r.text);
+  else NOTE("idle");
 }
 $("seeBtn").onclick = () => { $("seeModal").classList.remove("hidden"); setTimeout(() => $("seeInput").focus(), 50); };
 $("seeClose").onclick = () => $("seeModal").classList.add("hidden");
@@ -420,21 +428,126 @@ $("speakToggle").onclick = e => { voiceOn = !voiceOn; e.target.textContent = voi
 /* mic */
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
 let rec = null, listening = false;
-$("micBtn").onclick = () => {
-  if (!SR) { toast("browser STT not supported — type instead"); return; }
-  if (listening) { rec.stop(); return; }
-  rec = new SR(); rec.lang = "en-US"; rec.interimResults = true;
-  $("micBtn").classList.add("live"); $("micBtn").textContent = "Listening — click to stop"; listening = true;
-  NOTE("listening");
-  let final = "";
-  rec.onresult = e => {
-    let interim = "";
-    for (const r of e.results) (r.isFinal ? final += r[0].transcript : interim += r[0].transcript);
-    input.value = final + interim;
+/* mic — Electron: mic→WAV→backend STT (unlimited hear, VAD stop).
+   Browser: Web Speech (free, interim results). */
+function _micUI(live) {
+  $("micBtn").classList.toggle("live", live);
+  $("micBtn").textContent = live ? "Listening — click to stop" : "Talk";
+}
+async function recordCommandWav() {
+  // resolves Blob (16k mono WAV) / null (heard nothing or stopped early)
+  const stream = await navigator.mediaDevices.getUserMedia({
+    audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+  });
+  const AC = window.AudioContext || window.webkitAudioContext;
+  const actx = new AC();
+  const src = actx.createMediaStreamSource(stream);
+  const proc = actx.createScriptProcessor(4096, 1, 1);
+  const chunks = [];
+  const devRate = actx.sampleRate;
+  let ambientSum = 0, ambientN = 0, threshold = 0.02;
+  const calEnd = performance.now() + 800;
+  let speaking = false, silenceMs = 0;
+  const startT = Date.now();
+  const SILENCE_STOP = 1500, SAFETY = 120000;
+  let stopped = false;
+  window._jarvisStopRec = () => { stopped = true; };
+  proc.onaudioprocess = e => {
+    const d = e.inputBuffer.getChannelData(0);
+    chunks.push(new Float32Array(d));
+    let sum = 0;
+    for (let i = 0; i < d.length; i++) sum += d[i] * d[i];
+    const rms = Math.sqrt(sum / d.length);
+    _micLevel = rms;
+    if (performance.now() < calEnd) {
+      ambientSum += rms; ambientN++;
+      threshold = Math.min(0.15, Math.max(0.015, (ambientSum / Math.max(1, ambientN)) * 3));
+      return;
+    }
+    if (rms > threshold) { speaking = true; silenceMs = 0; }
+    else if (speaking) silenceMs += (d.length / e.inputBuffer.sampleRate) * 1000;
   };
-  rec.onend = () => { $("micBtn").classList.remove("live"); $("micBtn").textContent = "Talk"; listening = false; NOTE("idle"); if (final.trim()) send(final.trim()); };
-  rec.onerror = () => { listening = false; $("micBtn").classList.remove("live"); };
-  rec.start();
+  src.connect(proc); proc.connect(actx.destination);
+  await new Promise(res => {
+    const iv = setInterval(() => {
+      if (stopped || (speaking && silenceMs >= SILENCE_STOP) || (Date.now() - startT >= SAFETY)) {
+        clearInterval(iv); res();
+      }
+    }, 100);
+  });
+  try { proc.disconnect(); src.disconnect(); } catch {}
+  stream.getTracks().forEach(t => { try { t.stop(); } catch {} });
+  try { actx.close(); } catch {}
+  window._jarvisStopRec = null;
+  _micLevel = null;
+  if (!speaking) return null;
+  // concat + downsample to 16k mono + WAV encode
+  let len = 0;
+  for (const c of chunks) len += c.length;
+  const raw = new Float32Array(len);
+  let off = 0;
+  for (const c of chunks) { raw.set(c, off); off += c.length; }
+  const target = 16000;
+  const ratio = devRate / target;
+  const outLen = Math.floor(len / ratio);
+  const out = new Int16Array(outLen);
+  for (let i = 0; i < outLen; i++) {
+    const v = raw[Math.floor(i * ratio)] || 0;
+    out[i] = Math.max(-32768, Math.min(32767, Math.round(v * 32768)));
+  }
+  const buf = new ArrayBuffer(44 + outLen * 2);
+  const dv = new DataView(buf);
+  const wstr = (o, s) => { for (let i = 0; i < s.length; i++) dv.setUint8(o + i, s.charCodeAt(i)); };
+  wstr(0, "RIFF"); dv.setUint32(4, 36 + outLen * 2, true); wstr(8, "WAVE");
+  wstr(12, "fmt "); dv.setUint32(16, 16, true); dv.setUint16(20, 1, true);
+  dv.setUint16(22, 1, true); dv.setUint32(24, target, true);
+  dv.setUint32(28, target * 2, true); dv.setUint16(32, 2, true); dv.setUint16(34, 16, true);
+  wstr(36, "data"); dv.setUint32(40, outLen * 2, true);
+  for (let i = 0; i < outLen; i++) dv.setInt16(44 + i * 2, out[i], true);
+  return new Blob([buf], { type: "audio/wav" });
+}
+$("micBtn").onclick = async () => {
+  if (!IS_ELECTRON) {
+    if (!SR) { toast("browser STT not supported — type instead"); return; }
+    if (listening) { rec.stop(); return; }
+    rec = new SR(); rec.lang = "en-US"; rec.interimResults = true;
+    _micUI(true); listening = true;
+    NOTE("listening");
+    let final = "";
+    rec.onresult = e => {
+      let interim = "";
+      for (const r of e.results) (r.isFinal ? final += r[0].transcript : interim += r[0].transcript);
+      input.value = final + interim;
+    };
+    rec.onend = () => { _micUI(false); listening = false; NOTE("idle"); if (final.trim()) send(final.trim()); };
+    rec.onerror = () => { listening = false; _micUI(false); NOTE("idle"); };
+    try { rec.start(); } catch { listening = false; _micUI(false); }
+    return;
+  }
+  // ── Electron path: backend transcribes, unlimited hear time ──
+  if (listening) {
+    listening = false;
+    try { window._jarvisStopRec && window._jarvisStopRec(); } catch {}
+    return;
+  }
+  _micUI(true); listening = true;
+  NOTE("listening");
+  try {
+    const blob = await recordCommandWav();
+    _micUI(false); listening = false; NOTE("idle");
+    if (!blob) { toast("Didn't hear anything — try again."); return; }
+    toast("Transcribing…");
+    const fd = new FormData();
+    fd.append("f", blob, "cmd.wav");
+    const r = await (await fetch(API + "/api/stt", { method: "POST", body: fd })).json();
+    const txt = (r.text || "").trim();
+    if (!txt || txt.startsWith("[")) { toast("Speech-to-text failed" + (txt ? ": " + txt.slice(0, 100) : ".")); return; }
+    input.value = txt;
+    send(txt);
+  } catch (e) {
+    _micUI(false); listening = false; NOTE("idle");
+    toast("Mic error: " + String(e && e.message || e).slice(0, 120));
+  }
 };
 
 /* ── prefs cache: provider/model/switches survive restart (server file, no keys) ── */
@@ -489,6 +602,7 @@ function stripWakeWord(txt) {
 }
 function startBrowserWake() {
   if (!SR) { toast("wake needs Chrome/Edge speech — using backend instead"); startBackendWake(); return; }
+  stopBackendWake(); // one ears at a time: browser and backend share one mic/speaker
   try { wakeRec && wakeRec.stop(); } catch { }
   wakeRec = new SR(); wakeRec.lang = "en-US"; wakeRec.continuous = true; wakeRec.interimResults = true;
   wakeRec.onresult = e => {
